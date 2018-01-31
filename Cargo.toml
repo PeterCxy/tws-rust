@@ -1,0 +1,12 @@
+[package]
+name = "tws-rust"
+version = "0.1.0"
+authors = ["Peter Cai <peter@typeblog.net>"]
+
+[dependencies]
+base64 = "0.6"
+error-chain = "0.11"
+futures = "0.1"
+hmac = "0.5"
+websocket = "0.20"
+sha2 = "0.7"
