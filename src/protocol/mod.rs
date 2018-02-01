@@ -4,4 +4,5 @@
  * and the concrete client / server implementation
  * but without user interface.
  */
+pub mod util;
 pub mod protocol;
