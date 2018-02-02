@@ -85,7 +85,7 @@ pub fn handshake_parse(passwd: &str, packet: &[u8]) -> Result<SocketAddr> {
 fn _handshake_parse(passwd: &str, time: i64, packet: &[u8]) -> Result<SocketAddr> {
     parse_authenticated_packet(passwd, packet)
         .and_then(|lines| {
-            if lines.len() != 2 {
+            if lines.len() < 2 {
                 return Err("Not a handshake packet".into());
             }
             if !(lines[0].starts_with("NOW ") && lines[0].len() > 4) {
