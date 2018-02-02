@@ -20,16 +20,16 @@ use protocol::util;
  */
 pub fn hmac_sha256(passwd: &str, data: &str) -> Result<String> {
     Hmac::<Sha256>::new(passwd.as_bytes())
-        .and_then(|mut mac| {
+        .map(|mut mac| {
             mac.input(data.as_bytes());
-            Ok(encode(mac.result().code().as_slice()))
+            encode(mac.result().code().as_slice())
         })
         .map_err(|_| "HMAC_SHA256 failed".into())
 }
 
 fn build_authenticated_packet(passwd: &str, msg: &str) -> Result<String> {
     hmac_sha256(passwd, msg)
-        .and_then(|auth| Ok(format!("AUTH {}\n{}", auth, msg)))
+        .map(|auth| format!("AUTH {}\n{}", auth, msg))
 }
 
 fn parse_authenticated_packet(passwd: &str, packet: &[u8]) -> Result<Vec<String>> {
@@ -45,7 +45,7 @@ fn parse_authenticated_packet(passwd: &str, packet: &[u8]) -> Result<Vec<String>
                 .collect::<Vec<String>>();
 
             hmac_sha256(passwd, &lines[1..].join("\n"))
-                .and_then(|auth| Ok((lines, auth)))
+                .map(|auth| (lines, auth))
         })
         .and_then(|(lines, auth)| {
             if lines[0] == format!("AUTH {}", auth) {
@@ -121,7 +121,7 @@ fn _handshake_parse(passwd: &str, time: i64, packet: &[u8]) -> Result<SocketAddr
 fn connect_build(passwd: &str) -> Result<(String, String)> {
     let conn_id = util::rand_str(6);
     _connect_build(passwd, &conn_id)
-        .and_then(|packet| Ok((conn_id, packet)))
+        .map(|packet| (conn_id, packet))
 }
 
 fn _connect_build(passwd: &str, conn_id: &str) -> Result<String> {
