@@ -181,6 +181,26 @@ pub fn connect_state_parse(packet: &[u8]) -> Result<(String, bool)> {
         })
 }
 
+/*
+ * Data packet to be forwarded to remote
+ * 
+ * > P[conn id][binary data]
+ */
+pub fn data_build(conn_id: &str, data: &[u8]) -> Vec<u8> {
+    [format!("P{}", conn_id).as_bytes(), data].concat()
+}
+
+pub fn data_parse(packet: &[u8]) -> Result<(String, Vec<u8>)> {
+    if packet[0] != "P".as_bytes()[0] || packet.len() < 8 {
+        Err("Not a Data packet".into())
+    } else {
+        str::from_utf8(&packet[1..7])
+            .map(|s| String::from(s))
+            .chain_err(|| "Failed to decode conn_id")
+            .map(|s| (s, packet[7..].to_vec()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +305,10 @@ mod tests {
     #[should_panic]
     fn connect_state_parse_fail_1() {
         connect_state_parse("CCNNECTION cbdae CLOSED".as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn data_parse_1() {
+        assert_eq!((String::from("acedef"), "HelloWorld".as_bytes().to_vec()), data_parse("PacedefHelloWorld".as_bytes()).unwrap());
     }
 }
