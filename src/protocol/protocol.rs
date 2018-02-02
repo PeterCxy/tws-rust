@@ -191,6 +191,14 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn handshake_build_parse_fail_1() {
+        let t = util::time_ms();
+        let handshake = _handshake_build("43g,poe3w", t, util::str_to_addr("fe80::dead:beef:2333:8080").unwrap()).unwrap();
+        _handshake_parse("43g,poe3", t, handshake.as_bytes()).unwrap();
+    }
+
+    #[test]
     fn connect_build_1() {
         assert_eq!(
             "AUTH +cdQQVGtyqj7KxTS5mPEwvpRGhRuctCM3pa9GsTYGZA=\nNEW CONNECTION XnjEa2",
