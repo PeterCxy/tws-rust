@@ -38,7 +38,7 @@ fn parse_authenticated_packet(passwd: &str, packet: &[u8]) -> Result<Vec<String>
     }
 
     str::from_utf8(packet)
-        .map_err(|_| "Illegal packet".into())
+        .chain_err(|| "Illegal packet")
         .and_then(|packet_str| {
             let lines = packet_str.lines()
                 .map(|s| String::from(s))
@@ -163,7 +163,7 @@ pub fn connect_state_parse(packet: &[u8]) -> Result<(String, bool)> {
     }
 
     str::from_utf8(packet)
-        .map_err(|_| "Not a Connect State packet".into())
+        .chain_err(|| "Not a Connect State packet")
         .and_then(|s| {
             let arr = s.split(" ").collect::<Vec<&str>>();
             if arr.len() != 3 {

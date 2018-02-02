@@ -14,6 +14,7 @@ mod errors {
         foreign_links {
             AddrParseError(::std::net::AddrParseError);
             ParseIntError(::std::num::ParseIntError);
+            Utf8Error(::std::str::Utf8Error);
         }
     }
 }
