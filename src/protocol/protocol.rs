@@ -151,12 +151,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hmac_sha256_should_work_1() {
+    fn hmac_sha256_1() {
         assert_eq!("pOWtIY65MVjolOXjrIkpNH72V95kfBGN9zL1OJdUZOY=", hmac_sha256("testpasswd", "testdata").unwrap());
     }
 
     #[test]
-    fn hmac_sha256_should_work_2() {
+    fn hmac_sha256_2() {
         assert_eq!("3c/Z/9/7ZqSfddwILUTheauyZe7YdDCRRtOArSRo9bc=", hmac_sha256("testpasswd2", "testdata2").unwrap());
     }
 
