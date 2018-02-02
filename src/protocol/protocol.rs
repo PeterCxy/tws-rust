@@ -27,11 +27,23 @@ pub fn hmac_sha256(passwd: &str, data: &str) -> Result<String> {
         .map_err(|_| "HMAC_SHA256 failed".into())
 }
 
+/*
+ * Add HMAC_SHA256 AUTH field to a text-based control packet.
+ * i.e. Add a line "AUTH [code]" in front of the packet
+ *      where [code] is the HMAC_SHA256 authentication code
+ *      generated from the packet body.
+ */
 fn build_authenticated_packet(passwd: &str, msg: &str) -> Result<String> {
     hmac_sha256(passwd, msg)
         .map(|auth| format!("AUTH {}\n{}", auth, msg))
 }
 
+/*
+ * Parse an HMAC_SHA256 authenticated text-based control packet.
+ * i.e. Verify if the packet starts with a line "AUTH [code]"
+ *      if so, verify the line against the packet body,
+ *      and split the packet into lines.
+ */
 fn parse_authenticated_packet<'a>(passwd: &str, packet: &'a [u8]) -> Result<Vec<&'a str>> {
     if packet[0..4] != "AUTH".as_bytes()[0..4] {
         return Err("Not a proper authenticated packet.".into());
@@ -61,15 +73,12 @@ fn parse_authenticated_packet<'a>(passwd: &str, packet: &'a [u8]) -> Result<Vec<
 }
 
 /*
- * Handshake packet
+ * Handshake packet (authenticated, including time)
  * 
  * > AUTH [authentication code]
  * > NOW [current timestamp (UTC)]
  * > TARGET [targetHost]:[targetPort]
  * 
- * [authentication code] is the HMAC_SHA256 value
- * based on the pre-shared password and
- * the full message without the AUTH line.
  */
 pub fn handshake_build(passwd: &str, target: SocketAddr) -> Result<String> {
     _handshake_build(passwd, util::time_ms(), target)
@@ -112,7 +121,7 @@ fn _handshake_parse(passwd: &str, time: i64, packet: &[u8]) -> Result<SocketAddr
 }
 
 /*
- * Connect packet
+ * Connect packet (authenticated)
  * 
  * > AUTH [authentication code]
  * > NEW CONNECTION [conn id]
