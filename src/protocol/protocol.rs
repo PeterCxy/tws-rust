@@ -1,6 +1,16 @@
 /*
  * This submodule contains implementation of basic
  * elements of the TWS protocol.
+ * 
+ * TWS protocol is a TCP forwarding protocol through
+ * one or more WebSocket channels. A WebSocket channel
+ * can contain multiple logical TCP connections to the
+ * same remote, while a forwarded TCP connection can only
+ * be attached to one WebSocket channel.
+ * 
+ * In this submodule, code is only concerned with basic
+ * building / parsing packets.
+ * 
  * TODO: Better documentation
  * TODO: Randomize packet length
  *      or try to add random meaningless
@@ -72,13 +82,30 @@ fn parse_authenticated_packet<'a>(passwd: &str, packet: &'a [u8]) -> Result<Vec<
         })
 }
 
+/* --- Control packets --- */
+/*
+ * All control packets are text-based,
+ * transmitting control information of
+ * the TWS protocol.
+ * 
+ * Some control packets need to be 
+ * authenticated with HMAC_SHA256,
+ * see above for authentication process.
+ */
+
 /*
  * Handshake packet (authenticated, including time)
+ * The first control packet to send when opening
+ * a new WebSocket channel. Sets the forwarding
+ * destination and authenticates the client.
  * 
  * > AUTH [authentication code]
  * > NOW [current timestamp (UTC)]
  * > TARGET [targetHost]:[targetPort]
  * 
+ * Packets older than 5 seconds (TODO: make this configurable)
+ * should be dropped to prevent replaying.
+ * (Even though this protocol should work behind TLS)
  */
 pub fn handshake_build(passwd: &str, target: SocketAddr) -> Result<String> {
     _handshake_build(passwd, util::time_ms(), target)
@@ -122,6 +149,11 @@ fn _handshake_parse(passwd: &str, time: i64, packet: &[u8]) -> Result<SocketAddr
 
 /*
  * Connect packet (authenticated)
+ * Request to open a new logical TCP connection
+ * to the remote (specified in the Handshake packet)
+ * inside a WebSocket channel.
+ * The server should respond with a connection state
+ * packet.
  * 
  * > AUTH [authentication code]
  * > NEW CONNECTION [conn id]
@@ -161,10 +193,12 @@ fn connect_parse<'a>(passwd: &str, packet: &'a [u8]) -> Result<&'a str> {
 
 /*
  * Connection State Packet (or Connect-Response packet)
+ * Can be sent by either the client or the server
+ * to notify changes on the state of a logical
+ * connection in the current WebSocket channel.
  * 
  * > CONNECTION [conn id] <OK|CLOSED>
  * 
- * Notify the state of [conn id]
  */
 pub fn connect_state_build(conn_id: &str, ok: bool) -> String {
     format!("CONNECTION {} {}", conn_id, if ok { "OK" } else { "CLOSED" })
@@ -194,10 +228,15 @@ pub fn connect_state_parse<'a>(packet: &'a [u8]) -> Result<(&'a str, bool)> {
         })
 }
 
+/* --- Data packet --- */
 /*
- * Data packet to be forwarded to remote
+ * Data packet
+ * Just wraps the actual data to forward
+ * through a logical connection to
+ * the remote / client.
  * 
  * > P[conn id][binary data]
+ * 
  */
 pub fn data_build(conn_id: &str, data: &[u8]) -> Vec<u8> {
     [format!("P{}", conn_id).as_bytes(), data].concat()
