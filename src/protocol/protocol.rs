@@ -32,7 +32,7 @@ fn build_authenticated_packet(passwd: &str, msg: &str) -> Result<String> {
         .map(|auth| format!("AUTH {}\n{}", auth, msg))
 }
 
-fn parse_authenticated_packet(passwd: &str, packet: &[u8]) -> Result<Vec<String>> {
+fn parse_authenticated_packet<'a>(passwd: &str, packet: &'a [u8]) -> Result<Vec<&'a str>> {
     if packet[0..4] != "AUTH".as_bytes()[0..4] {
         return Err("Not a proper authenticated packet.".into());
     }
@@ -41,15 +41,19 @@ fn parse_authenticated_packet(passwd: &str, packet: &[u8]) -> Result<Vec<String>
         .chain_err(|| "Illegal packet")
         .and_then(|packet_str| {
             let lines = packet_str.lines()
-                .map(|s| String::from(s))
-                .collect::<Vec<String>>();
-
-            hmac_sha256(passwd, &lines[1..].join("\n"))
-                .map(|auth| (lines, auth))
+                .skip(1)
+                .collect::<Vec<&str>>();
+            packet_str.find("\n").ok_or("Not a proper packet".into())
+                .map(|index| packet_str.split_at(index))
+                .and_then(|(l, r)| {
+                    hmac_sha256(passwd, &r[1..])
+                        .map(|auth| (l, auth))
+                })
+                .map(|(first_line, auth)| (first_line, lines, auth))
         })
-        .and_then(|(lines, auth)| {
-            if lines[0] == format!("AUTH {}", auth) {
-                Ok(lines[1..].to_vec())
+        .and_then(|(first_line, lines, auth)| {
+            if first_line == format!("AUTH {}", auth) {
+                Ok(lines)
             } else {
                 Err("Illegal packet".into())
             }
@@ -131,7 +135,7 @@ fn _connect_build(passwd: &str, conn_id: &str) -> Result<String> {
     )
 }
 
-fn connect_parse(passwd: &str, packet: &[u8]) -> Result<String> {
+fn connect_parse<'a>(passwd: &str, packet: &'a [u8]) -> Result<&'a str> {
     parse_authenticated_packet(passwd, packet)
         .and_then(|lines| {
             if lines.len() < 1 {
@@ -142,7 +146,7 @@ fn connect_parse(passwd: &str, packet: &[u8]) -> Result<String> {
                 return Err("Not a Connect packet".into());
             }
 
-            Ok(String::from(&lines[0][15..]))
+            Ok(&lines[0][15..])
         })
 }
 
@@ -157,7 +161,7 @@ pub fn connect_state_build(conn_id: &str, ok: bool) -> String {
     format!("CONNECTION {} {}", conn_id, if ok { "OK" } else { "CLOSED" })
 }
 
-pub fn connect_state_parse(packet: &[u8]) -> Result<(String, bool)> {
+pub fn connect_state_parse<'a>(packet: &'a [u8]) -> Result<(&'a str, bool)> {
     if packet[0..10] != "CONNECTION".as_bytes()[0..10] {
         return Err("Not a Connect State packet".into());
     }
@@ -170,7 +174,7 @@ pub fn connect_state_parse(packet: &[u8]) -> Result<(String, bool)> {
                 return Err("Not a Connect State packet".into());
             }
 
-            let conn_id = String::from(arr[1]);
+            let conn_id = arr[1];
             if arr[2] == "OK" {
                 Ok((conn_id, true))
             } else if arr[2] == "CLOSED" {
@@ -190,14 +194,13 @@ pub fn data_build(conn_id: &str, data: &[u8]) -> Vec<u8> {
     [format!("P{}", conn_id).as_bytes(), data].concat()
 }
 
-pub fn data_parse(packet: &[u8]) -> Result<(String, Vec<u8>)> {
+pub fn data_parse<'a>(packet: &'a [u8]) -> Result<(&'a str, &'a [u8])> {
     if packet[0] != "P".as_bytes()[0] || packet.len() < 8 {
         Err("Not a Data packet".into())
     } else {
         str::from_utf8(&packet[1..7])
-            .map(|s| String::from(s))
             .chain_err(|| "Failed to decode conn_id")
-            .map(|s| (s, packet[7..].to_vec()))
+            .map(|s| (s, &packet[7..]))
     }
 }
 
@@ -293,12 +296,12 @@ mod tests {
 
     #[test]
     fn connect_state_parse_1() {
-        assert_eq!((String::from("abcde"), true), connect_state_parse("CONNECTION abcde OK".as_bytes()).unwrap());
+        assert_eq!(("abcde", true), connect_state_parse("CONNECTION abcde OK".as_bytes()).unwrap());
     }
 
     #[test]
     fn connect_state_parse_2() {
-        assert_eq!((String::from("cbdae"), false), connect_state_parse("CONNECTION cbdae CLOSED".as_bytes()).unwrap());
+        assert_eq!(("cbdae", false), connect_state_parse("CONNECTION cbdae CLOSED".as_bytes()).unwrap());
     }
 
     #[test]
@@ -309,6 +312,6 @@ mod tests {
 
     #[test]
     fn data_parse_1() {
-        assert_eq!((String::from("acedef"), "HelloWorld".as_bytes().to_vec()), data_parse("PacedefHelloWorld".as_bytes()).unwrap());
+        assert_eq!(("acedef", "HelloWorld".as_bytes()), data_parse("PacedefHelloWorld".as_bytes()).unwrap());
     }
 }
