@@ -146,6 +146,41 @@ fn connect_parse(passwd: &str, packet: &[u8]) -> Result<String> {
         })
 }
 
+/*
+ * Connection State Packet (or Connect-Response packet)
+ * 
+ * > CONNECTION [conn id] <OK|CLOSED>
+ * 
+ * Notify the state of [conn id]
+ */
+pub fn connect_state_build(conn_id: &str, ok: bool) -> String {
+    format!("CONNECTION {} {}", conn_id, if ok { "OK" } else { "CLOSED" })
+}
+
+pub fn connect_state_parse(packet: &[u8]) -> Result<(String, bool)> {
+    if packet[0..10] != "CONNECTION".as_bytes()[0..10] {
+        return Err("Not a Connect State packet".into());
+    }
+
+    str::from_utf8(packet)
+        .map_err(|_| "Not a Connect State packet".into())
+        .and_then(|s| {
+            let arr = s.split(" ").collect::<Vec<&str>>();
+            if arr.len() != 3 {
+                return Err("Not a Connect State packet".into());
+            }
+
+            let conn_id = String::from(arr[1]);
+            if arr[2] == "OK" {
+                Ok((conn_id, true))
+            } else if arr[2] == "CLOSED" {
+                Ok((conn_id, false))
+            } else {
+                Err("Not a Connect State packet".into())
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +259,31 @@ mod tests {
     #[should_panic]
     fn connect_parse_fail_2() {
         connect_parse("fneo0ivb", b"AUTH +l0yOYsTR0oqvj77/0iO24WjmdxRKNmMwVhXZpVLwvY=\nNEW CONNECTION 37keeU").unwrap();
+    }
+
+    #[test]
+    fn connect_state_build_1() {
+        assert_eq!("CONNECTION abcde OK", connect_state_build("abcde", true));
+    }
+
+    #[test]
+    fn connect_state_build_2() {
+        assert_eq!("CONNECTION cbdea CLOSED", connect_state_build("cbdea", false));
+    }
+
+    #[test]
+    fn connect_state_parse_1() {
+        assert_eq!((String::from("abcde"), true), connect_state_parse("CONNECTION abcde OK".as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn connect_state_parse_2() {
+        assert_eq!((String::from("cbdae"), false), connect_state_parse("CONNECTION cbdae CLOSED".as_bytes()).unwrap());
+    }
+
+    #[test]
+    #[should_panic]
+    fn connect_state_parse_fail_1() {
+        connect_state_parse("CCNNECTION cbdae CLOSED".as_bytes()).unwrap();
     }
 }
