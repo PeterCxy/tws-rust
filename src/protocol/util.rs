@@ -1,5 +1,7 @@
 use errors::*;
+use rand::{self, Rng};
 use std::net::SocketAddr;
+use std::str;
 use time;
 
 /*
@@ -37,6 +39,19 @@ pub fn str_to_addr(addr: &str) -> Result<SocketAddr> {
 pub fn time_ms() -> i64 {
     let t = time::now_utc().to_timespec();
     (t.sec as i64) * 1000 + (t.nsec as i64) / 1000 / 1000
+}
+
+/*
+ * Generate a random alphanumeric string of a specified length
+ */
+const DICTIONARY: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+pub fn rand_str(len: usize) -> String {
+    let mut rng = rand::thread_rng();
+    let mut ret: Vec<u8> = Vec::with_capacity(len);
+    for i in 0..len {
+        ret[i] = DICTIONARY[rng.gen_range(0, DICTIONARY.len())];
+    }
+    str::from_utf8(ret.as_slice()).unwrap().to_string()
 }
 
 #[cfg(test)]

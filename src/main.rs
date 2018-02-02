@@ -1,5 +1,6 @@
 extern crate base64;
 extern crate hmac;
+extern crate rand;
 extern crate sha2;
 extern crate time;
 
