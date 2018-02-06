@@ -25,6 +25,38 @@ use std::str;
 use protocol::util;
 
 /*
+ * Enum to represent different parsed packets
+ */
+pub enum Packet<'a> {
+    Handshake(SocketAddr),
+    Connect(&'a str),
+    ConnectionState((&'a str, bool)),
+    Data((&'a str, &'a [u8])),
+    Unrecognized
+}
+
+/*
+ * Try to parse a packet
+ * If it is a recognized packet in the TWS protocol,
+ * return the result in a Packet struct.
+ * Otherwise, return Packet::Unrecognized.
+ * For details on parsing, see below in this module.
+ */
+pub fn parse_packet<'a>(passwd: &str, packet: &'a [u8]) -> Packet<'a> {
+    if let Ok(res) = handshake_parse(passwd, packet) {
+        Packet::Handshake(res)
+    } else if let Ok(res) = connect_parse(passwd, packet) {
+        Packet::Connect(res)
+    } else if let Ok(res) = connect_state_parse(packet) {
+        Packet::ConnectionState(res)
+    } else if let Ok(res) = data_parse(packet) {
+        Packet::Data(res)
+    } else {
+        Packet::Unrecognized
+    }
+}
+
+/*
  * HMAC_SHA256 authentication wrapper
  * This is used for HANDSHAKE and CONNECT packets
  */
