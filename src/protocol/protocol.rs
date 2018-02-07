@@ -27,6 +27,7 @@ use protocol::util;
 /*
  * Enum to represent different parsed packets
  */
+#[derive(Debug)]
 pub enum Packet<'a> {
     Handshake(SocketAddr),
     Connect(&'a str),

@@ -4,5 +4,7 @@
  * and the concrete client / server implementation
  * but without user interface.
  */
+#[macro_use]
 pub mod util;
 pub mod protocol;
+pub mod server;

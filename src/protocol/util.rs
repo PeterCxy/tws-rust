@@ -1,8 +1,34 @@
 use errors::*;
+use futures::future::Future;
 use rand::{self, Rng};
+use std::error;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::str;
 use time;
+
+/*
+ * Abstrasct loggers
+ * We'd like to deal with logging outside
+ * of this module
+ */
+#[derive(Debug)]
+pub enum LogLevel {
+    ERROR,
+    WARNING,
+    INFO,
+    DEBUG
+}
+pub type Logger = Rc<Fn(LogLevel, &str)>;
+pub fn default_logger(_level: LogLevel, _msg: &str) {
+    // We simply do nothing by default
+}
+
+macro_rules! do_log {
+    ($s: expr, $x: ident, $y: expr, $($z: expr),*) => {
+        ($s)(util::LogLevel::$x, &format!($y, $($z),*))
+    };
+}
 
 /*
  * Modified version of SocketAddr stringifier
@@ -52,6 +78,30 @@ pub fn rand_str(len: usize) -> String {
         ret[i] = DICTIONARY[rng.gen_range(0, DICTIONARY.len())];
     }
     str::from_utf8(ret.as_slice()).unwrap().to_string()
+}
+
+
+// Glue code to make error-chain work with futures
+// Source: <https://github.com/alexcrichton/sccache/blob/master/src/errors.rs>
+// Modified to avoid static lifetimes
+pub type BoxFuture<'a, T> = Box<'a + Future<Item = T, Error = Error>>;
+
+pub trait FutureChainErr<'a, T> {
+    fn chain_err<F, E>(self, callback: F) -> BoxFuture<'a, T>
+        where F: FnOnce() -> E + 'a,
+              E: Into<ErrorKind>;
+}
+
+impl<'a, F> FutureChainErr<'a, F::Item> for F
+    where F: Future + 'a,
+          F::Error: error::Error + Send + 'static,
+{
+    fn chain_err<C, E>(self, callback: C) -> BoxFuture<'a, F::Item>
+        where C: FnOnce() -> E + 'a,
+              E: Into<ErrorKind>,
+    {
+        Box::new(self.then(|r| r.chain_err(callback)))
+    }
 }
 
 #[cfg(test)]
