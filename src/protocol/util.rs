@@ -1,7 +1,10 @@
 use errors::*;
+use futures::{Async, Stream, Sink};
 use futures::future::Future;
 use rand::{self, Rng};
 use std::error;
+use std::cell::RefCell;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::str;
@@ -101,6 +104,124 @@ impl<'a, F> FutureChainErr<'a, F::Item> for F
               E: Into<ErrorKind>,
     {
         Box::new(self.then(|r| r.chain_err(callback)))
+    }
+}
+
+/*
+ * Shared state between BufferedWriter and BufferedStream
+ */
+struct BufferedStreamState<I, E> {
+    marker: PhantomData<E>, // Placeholder
+    queue: Vec<I>, // Items to be written
+    finished: bool // Whether this stream should finish on next poll()
+}
+
+/*
+ * A stream that emits items from a
+ * shared buffer in a RefCell
+ * i.e. interior-mutable stream
+ * 
+ * if `finished` flag is set, the stream will end
+ * on the next poll()
+ * 
+ * This stream is not thread-safe. Only to be used
+ * in single-threaded asynchronous code.
+ */
+struct BufferedStream<I, E> {
+    state: Rc<RefCell<BufferedStreamState<I, E>>>
+}
+
+impl<I, E> BufferedStream<I, E> {
+    fn new(state: Rc<RefCell<BufferedStreamState<I, E>>>) -> BufferedStream<I, E> {
+        BufferedStream {
+            state
+        }
+    }
+}
+
+impl<I, E> Stream for BufferedStream<I, E> {
+    type Item = I;
+    type Error = E;
+
+    fn poll(&mut self) ->  ::std::result::Result<Async<Option<I>>, E> {
+        let ref mut state = self.state.borrow_mut();
+        if state.finished {
+            // Finished. Return None to signal the end of stream.
+            return Ok(Async::Ready(None));
+        } else if state.queue.len() > 0 {
+            // There is item to be sent.
+            // Send the first element in the queue (buffer)
+            let item = state.queue.remove(0);
+            return Ok(Async::Ready(Some(item)));
+        } else {
+            // Nothing to be sent, but the stream
+            // is not marked as finished yet.
+            return Ok(Async::NotReady);
+        }
+    }
+}
+
+/*
+ * A writer that writes to a Sink
+ * but does not flush() or wait for finishing
+ * using BufferedStream.
+ * 
+ * This is a workaround because Sink::send()
+ * will consume ownership and will do flush()
+ * each time we try to send an item.
+ */
+pub struct BufferedWriter<S: 'static + Sink> {
+    state: Rc<RefCell<BufferedStreamState<S::SinkItem, S::SinkError>>>
+}
+
+impl<S: 'static + Sink> BufferedWriter<S> {
+    pub fn new() -> BufferedWriter<S> {
+        BufferedWriter {
+            state: Rc::new(RefCell::new(BufferedStreamState {
+                marker: PhantomData,
+                queue: Vec::new(),
+                finished: false
+            }))
+        }
+    }
+
+    /*
+     * Start writing to a sink. This will consume the sink.
+     * In order to write to the sink, use the `feed` method
+     * on this writer subsequent to this call.
+     * 
+     * Returns a Future that finishes when closing.
+     * Please consume the Future by joining with the
+     * reading part of the sink.
+     */
+    pub fn run(&self, sink: S) -> Box<Future<Item=(), Error=S::SinkError>> {
+        let state = self.state.clone();
+        let stream = BufferedStream::new(state);
+        Box::new(stream.forward(sink)
+            .map(|_| ()))
+    }
+
+    /*
+     * Feed a new item into the 
+     */
+    pub fn feed(&self, item: S::SinkItem) {
+        let ref mut state = self.state.borrow_mut();
+        if !state.finished {
+            state.queue.push(item);
+        }
+    }
+
+    /*
+     * Mark as finished.
+     */
+    pub fn close(&self) {
+        self.state.borrow_mut().finished = true;
+    }
+}
+
+impl<S: 'static + Sink> Drop for BufferedWriter<S> {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 

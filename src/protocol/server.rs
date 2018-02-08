@@ -1,7 +1,7 @@
 /*
  * Server-side concrete implementation of TWS
  */
-use futures::{Stream, Sink};
+use futures::{Stream};
 use futures::future::{Future, IntoFuture};
 use futures::stream::{SplitSink};
 use protocol::protocol as proto;
@@ -75,6 +75,7 @@ struct ServerSession {
     option: TwsServerOption,
     logger: util::Logger,
     handle: Handle,
+    writer: Rc<util::BufferedWriter<ClientSink>>,
     state: RefCell<ServerSessionState>
 }
 
@@ -84,6 +85,7 @@ impl ServerSession {
             option,
             logger,
             handle,
+            writer: Rc::new(util::BufferedWriter::new()),
             state: RefCell::new(ServerSessionState {
                 remote: None
             })
@@ -91,40 +93,50 @@ impl ServerSession {
     }
 
     pub fn run<'a>(self, client: Client<TcpStream>) -> BoxFuture<'a, ()> {
-        let local_logger = self.logger.clone();
+        let local_logger1 = self.logger.clone();
+        let local_logger2 = self.logger.clone();
         let (sink, stream) = client.split();
+        let sink_write = self.writer.run(sink).map_err(move |e| {
+            do_log!(local_logger1, ERROR, "{:?}", e);
+            "session failed.".into()
+        });
         Box::new(stream
             .map_err(move |e| {
-                do_log!(local_logger, ERROR, "{:?}", e);
+                do_log!(local_logger2, ERROR, "{:?}", e);
                 "session failed.".into()
             })
             .for_each(move |msg| {
-                self.on_message(&sink, msg)
+                self.on_message(msg)
             })
             .into_future()
-            //.map_err(|_| "session failed.".into())
+            .map(|_| ())
+            .join(sink_write)
             .map(|_| ()))
     }
 
-    fn on_message<'a>(&self, sink: &ClientSink, msg: OwnedMessage) -> BoxFuture<'a, ()> {
+    fn on_message<'a>(&self, msg: OwnedMessage) -> BoxFuture<'a, ()> {
         match msg {
-            OwnedMessage::Text(text) => self.on_packet(sink, proto::parse_packet(&self.option.passwd, text.as_bytes())),
-            OwnedMessage::Binary(bytes) => self.on_packet(sink, proto::parse_packet(&self.option.passwd, &bytes)),
+            OwnedMessage::Text(text) => self.on_packet(proto::parse_packet(&self.option.passwd, text.as_bytes())),
+            OwnedMessage::Binary(bytes) => self.on_packet(proto::parse_packet(&self.option.passwd, &bytes)),
             // TODO: Implement Close / Ping events
             _ => Box::new(Ok(()).into_future())
         }
     }
 
-    fn on_packet<'a>(&self, sink: &ClientSink, packet: proto::Packet) -> BoxFuture<'a, ()> {
+    fn on_packet<'a>(&self, packet: proto::Packet) -> BoxFuture<'a, ()> {
         do_log!(self.logger, DEBUG, "{:?}", packet);
         match packet {
-            proto::Packet::Handshake(addr) => self.on_handshake(sink, addr),
+            proto::Packet::Handshake(addr) => self.on_handshake(addr),
             _ => Box::new(Ok(()).into_future()) // TODO: Close on failure?
         }
     }
 
-    fn on_handshake<'a>(&self, sink: &ClientSink, addr: SocketAddr) -> BoxFuture<'a, ()> {
+    fn on_handshake<'a>(&self, addr: SocketAddr) -> BoxFuture<'a, ()> {
         self.state.borrow_mut().remote = Some(addr);
+
+        // Send anything back to activate the connection
+        self.writer.feed(OwnedMessage::Text(String::from("hello")));
+
         Box::new(Ok(()).into_future())
     }
 }
