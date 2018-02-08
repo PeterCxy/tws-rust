@@ -1,10 +1,12 @@
 extern crate base64;
+extern crate bytes;
 extern crate futures;
 extern crate hmac;
 extern crate rand;
 extern crate sha2;
 extern crate time;
 extern crate tokio_core;
+extern crate tokio_io;
 extern crate websocket;
 
 #[macro_use]
@@ -15,6 +17,7 @@ mod protocol;
 mod errors {
     error_chain! {
         foreign_links {
+            IoError(::std::io::Error);
             AddrParseError(::std::net::AddrParseError);
             ParseIntError(::std::num::ParseIntError);
             Utf8Error(::std::str::Utf8Error);

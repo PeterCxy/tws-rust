@@ -1,16 +1,20 @@
 /*
  * Server-side concrete implementation of TWS
  */
+use bytes::Bytes;
 use futures::{Stream};
 use futures::future::{Future, IntoFuture};
 use futures::stream::{SplitSink};
 use protocol::protocol as proto;
 use protocol::util::{self, BoxFuture, FutureChainErr};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
+use tokio_io::AsyncRead;
+use tokio_io::codec::BytesCodec;
 use websocket::OwnedMessage;
 use websocket::async::{Server, Client, MessageCodec};
 use websocket::client::async::Framed;
@@ -66,11 +70,13 @@ impl TwsServer {
 }
 
 type ClientSink = SplitSink<Framed<TcpStream, MessageCodec<OwnedMessage>>>;
+type RemoteSink = SplitSink<Framed<TcpStream, BytesCodec>>;
 
 struct ServerSessionState {
     remote: Option<SocketAddr>,
     client: Option<SocketAddr>,
-    handshaked: bool
+    handshaked: bool,
+    remote_connections: HashMap<String, RemoteConnection>
 }
 
 struct ServerSession {
@@ -78,7 +84,7 @@ struct ServerSession {
     logger: util::Logger,
     handle: Handle,
     writer: Rc<util::BufferedWriter<ClientSink>>,
-    state: RefCell<ServerSessionState>
+    state: Rc<RefCell<ServerSessionState>>
 }
 
 impl ServerSession {
@@ -88,11 +94,12 @@ impl ServerSession {
             logger,
             handle,
             writer: Rc::new(util::BufferedWriter::new()),
-            state: RefCell::new(ServerSessionState {
+            state: Rc::new(RefCell::new(ServerSessionState {
                 remote: None,
                 client: None,
-                handshaked: false
-            })
+                handshaked: false,
+                remote_connections: HashMap::new()
+            }))
         }
     }
 
@@ -132,6 +139,9 @@ impl ServerSession {
         do_log!(self.logger, DEBUG, "{:?}", packet);
         match packet {
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
+            proto::Packet::Connect(conn_id) => self.on_connect(conn_id),
+            proto::Packet::ConnectionState((conn_id, ok)) => self.on_connect_state(conn_id, ok),
+            proto::Packet::Data((conn_id, data)) => self.on_data(conn_id, data),
             _ => self.on_unknown()
         }
     }
@@ -149,7 +159,7 @@ impl ServerSession {
 
     fn on_handshake<'a>(&self, addr: SocketAddr) -> BoxFuture<'a, ()> {
         let ref mut state = self.state.borrow_mut();
-        do_log!(self.logger, INFO, "New connection: {} <=> {}", state.client.unwrap(), addr);
+        do_log!(self.logger, INFO, "New session: {} <=> {}", state.client.unwrap(), addr);
         state.remote = Some(addr);
         state.handshaked = true;
 
@@ -157,5 +167,111 @@ impl ServerSession {
         self.writer.feed(OwnedMessage::Text(String::from("hello")));
 
         Box::new(Ok(()).into_future())
+    }
+
+    fn on_connect<'a>(&self, conn_id: &str) -> BoxFuture<'a, ()> {
+        let state = self.state.clone();
+        let _conn_id_1 = String::from(conn_id);
+        let _conn_id_2 = _conn_id_1.clone();
+        let _writer_1 = self.writer.clone();
+        let _writer_2 = self.writer.clone();
+        Box::new(
+            RemoteConnection::connect(conn_id, self.logger.clone(), self.writer.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
+                .map(move |conn| {
+                    _writer_1.feed(OwnedMessage::Text(proto::connect_state_build(&_conn_id_1, true)));
+                    state.borrow_mut().remote_connections.insert(_conn_id_1, conn);
+                })
+                .then(move |r| {
+                    // TODO: Log
+                    if r.is_err() {
+                        _writer_2.feed(OwnedMessage::Text(proto::connect_state_build(&_conn_id_2, false)));
+                    }
+                    Ok(())
+                })
+        )
+    }
+
+    fn on_connect_state<'a>(&self, conn_id: &str, ok: bool) -> BoxFuture<'a, ()> {
+        if !ok {
+            let ref mut conns = self.state.borrow_mut().remote_connections;
+            if conns.contains_key(conn_id) {
+                conns.remove(conn_id);
+            }
+        }
+        // Client side will not send ok = false.
+        Box::new(Ok(()).into_future())
+    }
+
+    fn on_data<'a>(&self, conn_id: &str, data: &[u8]) -> BoxFuture<'a, ()> {
+        let ref conns = self.state.borrow().remote_connections;
+        if let Some(conn) = conns.get(conn_id) {
+            conn.send(data);
+        }
+        Box::new(Ok(()).into_future())
+    }
+}
+
+struct RemoteConnection {
+    conn_id: String,
+    logger: util::Logger,
+    remote_writer: Rc<util::BufferedWriter<RemoteSink>>
+}
+
+impl RemoteConnection {
+    fn connect<'a>(
+        conn_id: &str,
+        logger: util::Logger,
+        client_writer: Rc<util::BufferedWriter<ClientSink>>,
+        addr: &SocketAddr,
+        handle: Handle
+    ) -> BoxFuture<'a, RemoteConnection> {
+        let _conn_id = String::from(conn_id);
+
+        // Prepare values to be used in closures
+        let _conn_id_1 = _conn_id.clone();
+        let _conn_id_2 = _conn_id.clone();
+        let _conn_id_3 = _conn_id.clone();
+        let _logger_1 = logger.clone();
+        let _logger_2 = logger.clone();
+
+        Box::new(TcpStream::connect(addr, &handle.clone())
+            .chain_err(|| "Connection failed")
+            .map(move |s| {
+                // Convert the client into two halves
+                let (sink, stream) = s.framed(BytesCodec::new()).split();
+
+                // BufferedWriter for sending to remote
+                let remote_writer = Rc::new(util::BufferedWriter::new());
+
+                // Forward remote packets to client
+                let stream_work = stream.for_each(move |p| {
+                    client_writer.feed(OwnedMessage::Binary(proto::data_build(&_conn_id_3, &p)));
+                    Ok(()).into_future()
+                }).map_err(move |e| do_log!(_logger_1, ERROR, "[{}] Remote => Client side error {:?}", _conn_id_1, e));
+
+                // Forward client packets to remote
+                let sink_work = remote_writer.run(sink)
+                    .map_err(move |e| do_log!(_logger_2, ERROR, "[{}] Client => Remote side error {:?}", _conn_id_2, e));
+
+                // Schedule the two jobs on the event loop
+                handle.spawn(stream_work.join(sink_work).map(|_| ()));
+
+                // Create RemoteConnection object
+                // To be used in ServerSession to forward data
+                RemoteConnection {
+                    conn_id: _conn_id,
+                    logger,
+                    remote_writer
+                }
+            }))
+    }
+
+    /*
+     * Send a data buffer to remote via the BufferedWriter
+     * created while connecting
+     */
+    fn send(&self, data: &[u8]) {
+        do_log!(self.logger, INFO, "[{}]: sending {} bytes to remote", self.conn_id, data.len());
+        self.remote_writer.feed(Bytes::from(data));
     }
 }

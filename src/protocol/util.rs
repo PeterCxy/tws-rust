@@ -1,9 +1,11 @@
 use errors::*;
 use futures::{Async, Stream, Sink};
 use futures::future::Future;
+use futures::task::{self, Task};
 use rand::{self, Rng};
 use std::error;
 use std::cell::RefCell;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -116,7 +118,8 @@ impl<'a, F> FutureChainErr<'a, F::Item> for F
 struct BufferedStreamState<I, E> {
     marker: PhantomData<E>, // Placeholder
     queue: Vec<I>, // Items to be written
-    finished: bool // Whether this stream should finish on next poll()
+    finished: bool, // Whether this stream should finish on next poll()
+    task: Option<Task> // The Task driviog the stream
 }
 
 /*
@@ -130,11 +133,11 @@ struct BufferedStreamState<I, E> {
  * This stream is not thread-safe. Only to be used
  * in single-threaded asynchronous code.
  */
-struct BufferedStream<I, E> {
+struct BufferedStream<I: Debug, E> {
     state: Rc<RefCell<BufferedStreamState<I, E>>>
 }
 
-impl<I, E> BufferedStream<I, E> {
+impl<I: Debug, E> BufferedStream<I, E> {
     fn new(state: Rc<RefCell<BufferedStreamState<I, E>>>) -> BufferedStream<I, E> {
         BufferedStream {
             state
@@ -142,12 +145,19 @@ impl<I, E> BufferedStream<I, E> {
     }
 }
 
-impl<I, E> Stream for BufferedStream<I, E> {
+impl<I: Debug, E> Stream for BufferedStream<I, E> {
     type Item = I;
     type Error = E;
 
     fn poll(&mut self) ->  ::std::result::Result<Async<Option<I>>, E> {
         let ref mut state = self.state.borrow_mut();
+
+        // If the task has not been known yet
+        // fetch the current task and put into the current state
+        if state.task.is_none() {
+            state.task = Some(task::current());
+        }
+
         if state.finished {
             // Finished. Return None to signal the end of stream.
             return Ok(Async::Ready(None));
@@ -173,17 +183,18 @@ impl<I, E> Stream for BufferedStream<I, E> {
  * will consume ownership and will do flush()
  * each time we try to send an item.
  */
-pub struct BufferedWriter<S: 'static + Sink> {
+pub struct BufferedWriter<S: 'static + Sink> where S::SinkItem: Debug {
     state: Rc<RefCell<BufferedStreamState<S::SinkItem, S::SinkError>>>
 }
 
-impl<S: 'static + Sink> BufferedWriter<S> {
+impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
     pub fn new() -> BufferedWriter<S> {
         BufferedWriter {
             state: Rc::new(RefCell::new(BufferedStreamState {
                 marker: PhantomData,
                 queue: Vec::new(),
-                finished: false
+                finished: false,
+                task: None
             }))
         }
     }
@@ -205,12 +216,20 @@ impl<S: 'static + Sink> BufferedWriter<S> {
     }
 
     /*
-     * Feed a new item into the 
+     * Feed a new item into the sink
      */
     pub fn feed(&self, item: S::SinkItem) {
         let ref mut state = self.state.borrow_mut();
         if !state.finished {
             state.queue.push(item);
+
+            // Notify the task driving the stream
+            // that we have something new to send.
+            // Failing to do so will cause the stream
+            // not being polled any more.
+            if let Some(ref task) = state.task {
+                task.notify();
+            }
         }
     }
 
@@ -222,7 +241,7 @@ impl<S: 'static + Sink> BufferedWriter<S> {
     }
 }
 
-impl<S: 'static + Sink> Drop for BufferedWriter<S> {
+impl<S: 'static + Sink> Drop for BufferedWriter<S> where S::SinkItem: Debug {
     fn drop(&mut self) {
         self.close();
     }
