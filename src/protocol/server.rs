@@ -68,7 +68,8 @@ impl TwsServer {
 type ClientSink = SplitSink<Framed<TcpStream, MessageCodec<OwnedMessage>>>;
 
 struct ServerSessionState {
-    remote: Option<SocketAddr>
+    remote: Option<SocketAddr>,
+    handshaked: bool
 }
 
 struct ServerSession {
@@ -87,7 +88,8 @@ impl ServerSession {
             handle,
             writer: Rc::new(util::BufferedWriter::new()),
             state: RefCell::new(ServerSessionState {
-                remote: None
+                remote: None,
+                handshaked: false
             })
         }
     }
@@ -127,12 +129,22 @@ impl ServerSession {
         do_log!(self.logger, DEBUG, "{:?}", packet);
         match packet {
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
-            _ => Box::new(Ok(()).into_future()) // TODO: Close on failure?
+            _ => {
+                if !self.state.borrow().handshaked {
+                    // Unknown packet received while not handshaked yet.
+                    // Close the connection.
+                    do_log!(self.logger, WARNING, "Authentication failure.");
+                    self.writer.feed(OwnedMessage::Close(None));
+                }
+                Box::new(Ok(()).into_future())
+            }
         }
     }
 
     fn on_handshake<'a>(&self, addr: SocketAddr) -> BoxFuture<'a, ()> {
-        self.state.borrow_mut().remote = Some(addr);
+        let ref mut state = self.state.borrow_mut();
+        state.remote = Some(addr);
+        state.handshaked = true;
 
         // Send anything back to activate the connection
         self.writer.feed(OwnedMessage::Text(String::from("hello")));

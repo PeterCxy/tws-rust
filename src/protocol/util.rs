@@ -28,6 +28,9 @@ pub fn default_logger(_level: LogLevel, _msg: &str) {
 }
 
 macro_rules! do_log {
+    ($s: expr, $x: ident, $y: expr) => {
+        ($s)(util::LogLevel::$x, $y)
+    };
     ($s: expr, $x: ident, $y: expr, $($z: expr),*) => {
         ($s)(util::LogLevel::$x, &format!($y, $($z),*))
     };
