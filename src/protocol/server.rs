@@ -104,12 +104,13 @@ impl ServerSession {
     }
 
     pub fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
-        self.state.borrow_mut().client = Some(addr);
+        let state = self.state.clone();
+        state.borrow_mut().client = Some(addr);
         let logger = self.logger.clone();
         let (sink, stream) = client.split();
         let sink_write = self.writer.run(sink).map_err(clone!(logger; |e| {
             do_log!(logger, ERROR, "{:?}", e);
-            "session failed.".into()
+            ()
         }));
         Box::new(stream
             .map_err(clone!(logger; |e| {
@@ -119,10 +120,18 @@ impl ServerSession {
             .for_each(move |msg| {
                 self.on_message(msg)
             })
-            .into_future()
             .map(|_| ())
-            .join(sink_write)
-            .map(|_| ()))
+            .map_err(|_| ())
+            .select(sink_write)
+            .then(clone!(state, logger; |_r| {
+                do_log!(logger, INFO, "Session finished.");
+
+                // Clean-up job
+                // Drop all the connections
+                state.borrow_mut().remote_connections.clear();
+
+                Ok(())
+            })))
     }
 
     fn on_message<'a>(&self, msg: OwnedMessage) -> BoxFuture<'a, ()> {
