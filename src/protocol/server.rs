@@ -234,7 +234,7 @@ impl RemoteConnection {
                 let remote_writer = Rc::new(util::BufferedWriter::new());
 
                 // Forward remote packets to client
-                let stream_work = stream.for_each(clone!(conn_id_owned; |p| {
+                let stream_work = stream.for_each(clone!(client_writer, conn_id_owned; |p| {
                     client_writer.feed(OwnedMessage::Binary(proto::data_build(&conn_id_owned, &p)));
                     Ok(()).into_future()
                 })).map_err(clone!(logger, conn_id_owned; |e| {
@@ -248,7 +248,13 @@ impl RemoteConnection {
                     }));
 
                 // Schedule the two jobs on the event loop
-                handle.spawn(stream_work.join(sink_work).map(|_| ()));
+                handle.spawn(stream_work.join(sink_work)
+                    .then(clone!(client_writer, logger, conn_id_owned; |_r| {
+                        // Clean-up job upon finishing
+                        do_log!(logger, INFO, "[{}] Channel closing.", conn_id_owned);
+                        client_writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
+                        Ok(())
+                    })));
 
                 // Create RemoteConnection object
                 // To be used in ServerSession to forward data
