@@ -242,7 +242,7 @@ impl RemoteConnection {
                     Ok(()).into_future()
                 })).map_err(clone!(logger, conn_id_owned; |e| {
                     do_log!(logger, ERROR, "[{}] Remote => Client side error {:?}", conn_id_owned, e);
-                }));
+                })).map(|_| ());
 
                 // Forward client packets to remote
                 let sink_work = remote_writer.run(sink)
@@ -251,9 +251,15 @@ impl RemoteConnection {
                     }));
 
                 // Schedule the two jobs on the event loop
-                handle.spawn(stream_work.join(sink_work)
+                // Use `select` to wait one of the jobs to finish.
+                // This is often the `sink_work` if no error on remote side
+                // has happened.
+                // Once one of them is finished, just tear down the whole
+                // channel.
+                handle.spawn(stream_work.select(sink_work)
                     .then(clone!(client_writer, logger, conn_id_owned; |_r| {
                         // Clean-up job upon finishing
+                        // No matter if there is any error.
                         do_log!(logger, INFO, "[{}] Channel closing.", conn_id_owned);
                         client_writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
                         Ok(())
@@ -276,5 +282,15 @@ impl RemoteConnection {
     fn send(&self, data: &[u8]) {
         do_log!(self.logger, INFO, "[{}]: sending {} bytes to remote", self.conn_id, data.len());
         self.remote_writer.feed(Bytes::from(data));
+    }
+
+    fn close(&self) {
+        self.remote_writer.close();
+    }
+}
+
+impl Drop for RemoteConnection {
+    fn drop(&mut self) {
+        self.close();
     }
 }
