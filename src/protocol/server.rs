@@ -47,7 +47,7 @@ impl TwsServer {
             .and_then(move |server| {
                 server.incoming()
                     .map_err(|_| "Failed to accept connections".into())
-                    .for_each(move |(upgrade, _addr)| {
+                    .for_each(move |(upgrade, addr)| {
                         let local_option = self.option.clone();
                         let local_logger = self.logger.clone();
                         let local_handle = self.handle.clone();
@@ -55,7 +55,7 @@ impl TwsServer {
                             .chain_err(|| "Failed to accept connection.")
                             .and_then(move |(client, _)| {
                                 ServerSession::new(local_option, local_logger, local_handle)
-                                    .run(client)
+                                    .run(client, addr)
                             })
                             .map_err(|_| ());
                         self.handle.spawn(work);
@@ -69,6 +69,7 @@ type ClientSink = SplitSink<Framed<TcpStream, MessageCodec<OwnedMessage>>>;
 
 struct ServerSessionState {
     remote: Option<SocketAddr>,
+    client: Option<SocketAddr>,
     handshaked: bool
 }
 
@@ -89,12 +90,14 @@ impl ServerSession {
             writer: Rc::new(util::BufferedWriter::new()),
             state: RefCell::new(ServerSessionState {
                 remote: None,
+                client: None,
                 handshaked: false
             })
         }
     }
 
-    pub fn run<'a>(self, client: Client<TcpStream>) -> BoxFuture<'a, ()> {
+    pub fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
+        self.state.borrow_mut().client = Some(addr);
         let local_logger1 = self.logger.clone();
         let local_logger2 = self.logger.clone();
         let (sink, stream) = client.split();
@@ -129,20 +132,24 @@ impl ServerSession {
         do_log!(self.logger, DEBUG, "{:?}", packet);
         match packet {
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
-            _ => {
-                if !self.state.borrow().handshaked {
-                    // Unknown packet received while not handshaked yet.
-                    // Close the connection.
-                    do_log!(self.logger, WARNING, "Authentication failure.");
-                    self.writer.feed(OwnedMessage::Close(None));
-                }
-                Box::new(Ok(()).into_future())
-            }
+            _ => self.on_unknown()
         }
+    }
+
+    fn on_unknown<'a>(&self) -> BoxFuture<'a, ()> {
+        let ref state = self.state.borrow();
+        if !state.handshaked {
+            // Unknown packet received while not handshaked yet.
+            // Close the connection.
+            do_log!(self.logger, WARNING, "Authentication failure. Client: {}", state.client.unwrap());
+            self.writer.feed(OwnedMessage::Close(None));
+        }
+        Box::new(Ok(()).into_future())
     }
 
     fn on_handshake<'a>(&self, addr: SocketAddr) -> BoxFuture<'a, ()> {
         let ref mut state = self.state.borrow_mut();
+        do_log!(self.logger, INFO, "New connection: {} <=> {}", state.client.unwrap(), addr);
         state.remote = Some(addr);
         state.handshaked = true;
 
