@@ -112,6 +112,9 @@ impl ServerSession {
             do_log!(logger, ERROR, "{:?}", e);
             ()
         }));
+        
+        // TODO: Heartbeat (configurable interval)
+        // TODO: Clean closed connections when doing heartbeats
         Box::new(stream
             .map_err(clone!(logger; |e| {
                 do_log!(logger, ERROR, "{:?}", e);
