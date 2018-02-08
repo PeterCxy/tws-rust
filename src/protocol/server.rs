@@ -105,18 +105,17 @@ impl ServerSession {
 
     pub fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
         self.state.borrow_mut().client = Some(addr);
-        let local_logger1 = self.logger.clone();
-        let local_logger2 = self.logger.clone();
+        let logger = self.logger.clone();
         let (sink, stream) = client.split();
-        let sink_write = self.writer.run(sink).map_err(move |e| {
-            do_log!(local_logger1, ERROR, "{:?}", e);
+        let sink_write = self.writer.run(sink).map_err(clone!(logger; |e| {
+            do_log!(logger, ERROR, "{:?}", e);
             "session failed.".into()
-        });
+        }));
         Box::new(stream
-            .map_err(move |e| {
-                do_log!(local_logger2, ERROR, "{:?}", e);
+            .map_err(clone!(logger; |e| {
+                do_log!(logger, ERROR, "{:?}", e);
                 "session failed.".into()
-            })
+            }))
             .for_each(move |msg| {
                 self.on_message(msg)
             })
@@ -171,23 +170,21 @@ impl ServerSession {
 
     fn on_connect<'a>(&self, conn_id: &str) -> BoxFuture<'a, ()> {
         let state = self.state.clone();
-        let _conn_id_1 = String::from(conn_id);
-        let _conn_id_2 = _conn_id_1.clone();
-        let _writer_1 = self.writer.clone();
-        let _writer_2 = self.writer.clone();
+        let conn_id_owned = String::from(conn_id);
+        let writer = self.writer.clone();
         Box::new(
             RemoteConnection::connect(conn_id, self.logger.clone(), self.writer.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
-                .map(move |conn| {
-                    _writer_1.feed(OwnedMessage::Text(proto::connect_state_build(&_conn_id_1, true)));
-                    state.borrow_mut().remote_connections.insert(_conn_id_1, conn);
-                })
-                .then(move |r| {
+                .map(clone!(writer, conn_id_owned; |conn| {
+                    writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, true)));
+                    state.borrow_mut().remote_connections.insert(conn_id_owned, conn);
+                }))
+                .then(clone!(writer, conn_id_owned; |r| {
                     // TODO: Log
                     if r.is_err() {
-                        _writer_2.feed(OwnedMessage::Text(proto::connect_state_build(&_conn_id_2, false)));
+                        writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
                     }
                     Ok(())
-                })
+                }))
         )
     }
 
@@ -225,14 +222,7 @@ impl RemoteConnection {
         addr: &SocketAddr,
         handle: Handle
     ) -> BoxFuture<'a, RemoteConnection> {
-        let _conn_id = String::from(conn_id);
-
-        // Prepare values to be used in closures
-        let _conn_id_1 = _conn_id.clone();
-        let _conn_id_2 = _conn_id.clone();
-        let _conn_id_3 = _conn_id.clone();
-        let _logger_1 = logger.clone();
-        let _logger_2 = logger.clone();
+        let conn_id_owned = String::from(conn_id);
 
         Box::new(TcpStream::connect(addr, &handle.clone())
             .chain_err(|| "Connection failed")
@@ -244,14 +234,18 @@ impl RemoteConnection {
                 let remote_writer = Rc::new(util::BufferedWriter::new());
 
                 // Forward remote packets to client
-                let stream_work = stream.for_each(move |p| {
-                    client_writer.feed(OwnedMessage::Binary(proto::data_build(&_conn_id_3, &p)));
+                let stream_work = stream.for_each(clone!(conn_id_owned; |p| {
+                    client_writer.feed(OwnedMessage::Binary(proto::data_build(&conn_id_owned, &p)));
                     Ok(()).into_future()
-                }).map_err(move |e| do_log!(_logger_1, ERROR, "[{}] Remote => Client side error {:?}", _conn_id_1, e));
+                })).map_err(clone!(logger, conn_id_owned; |e| {
+                    do_log!(logger, ERROR, "[{}] Remote => Client side error {:?}", conn_id_owned, e);
+                }));
 
                 // Forward client packets to remote
                 let sink_work = remote_writer.run(sink)
-                    .map_err(move |e| do_log!(_logger_2, ERROR, "[{}] Client => Remote side error {:?}", _conn_id_2, e));
+                    .map_err(clone!(logger, conn_id_owned; |e| {
+                        do_log!(logger, ERROR, "[{}] Client => Remote side error {:?}", conn_id_owned, e);
+                    }));
 
                 // Schedule the two jobs on the event loop
                 handle.spawn(stream_work.join(sink_work).map(|_| ()));
@@ -259,7 +253,7 @@ impl RemoteConnection {
                 // Create RemoteConnection object
                 // To be used in ServerSession to forward data
                 RemoteConnection {
-                    conn_id: _conn_id,
+                    conn_id: conn_id_owned,
                     logger,
                     remote_writer
                 }

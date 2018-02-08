@@ -39,6 +39,26 @@ macro_rules! do_log {
 }
 
 /*
+ * Simulate a closure that clones
+ * some environment variables and
+ * take ownership of them by default.
+ */
+macro_rules! clone {
+    ($($n:ident),+; || $body:block) => (
+        {
+            $( let $n = $n.clone(); )+
+            move || { $body }
+        }
+    );
+    ($($n:ident),+; |$($p:ident),+| $body:block) => (
+        {
+            $( let $n = $n.clone(); )+
+            move |$($p),+| { $body }
+        }
+    );
+}
+
+/*
  * Modified version of SocketAddr stringifier
  * Omits brackets for IPv6 addresses.
  */
