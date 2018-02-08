@@ -129,7 +129,10 @@ impl ServerSession {
         match msg {
             OwnedMessage::Text(text) => self.on_packet(proto::parse_packet(&self.option.passwd, text.as_bytes())),
             OwnedMessage::Binary(bytes) => self.on_packet(proto::parse_packet(&self.option.passwd, &bytes)),
-            // TODO: Implement Close / Ping events
+            OwnedMessage::Ping(msg) => {
+                self.writer.feed(OwnedMessage::Pong(msg));
+                Box::new(Ok(()).into_future())
+            },
             _ => Box::new(Ok(()).into_future())
         }
     }
