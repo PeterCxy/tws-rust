@@ -3,7 +3,7 @@ use futures::{Async, Stream, Sink};
 use futures::future::Future;
 use futures::task::{self, Task};
 use rand::{self, Rng};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::error;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -379,7 +379,7 @@ pub trait EventSource<T, U> where T: Eq {
 pub struct HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
     timeout: u64,
     writer: Rc<BufferedWriter<S>>,
-    heartbeat_received: Rc<RefCell<bool>>
+    heartbeat_received: Rc<Cell<bool>>
 }
 
 impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
@@ -387,7 +387,7 @@ impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
         HeartbeatAgent {
             timeout,
             writer,
-            heartbeat_received: Rc::new(RefCell::new(true))
+            heartbeat_received: Rc::new(Cell::new(true))
         }
     }
 
@@ -395,7 +395,7 @@ impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
      * Set the flag that we have now received the heartbeat message
      */
     pub fn set_heartbeat_received(&self) {
-        *self.heartbeat_received.borrow_mut() = true;
+        self.heartbeat_received.set(true);
     }
 
     /*
@@ -418,7 +418,7 @@ impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
         Timer::default().interval(Duration::from_millis(self.timeout))
             .map_err(|_| "Unknown error".into())
             .for_each(move |_| {
-                if !*heartbeat_received.borrow() {
+                if !heartbeat_received.get() {
                     // Close if no Pong is received within
                     // a timeout period.
                     writer.close();
@@ -427,7 +427,7 @@ impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
 
                 // Send Ping message
                 writer.feed(OwnedMessage::Ping(vec![]));
-                *heartbeat_received.borrow_mut() = false;
+                heartbeat_received.set(false);
                 Ok(())
             })
             ._box()
