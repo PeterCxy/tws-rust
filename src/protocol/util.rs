@@ -128,7 +128,33 @@ impl<'a, F> FutureChainErr<'a, F::Item> for F
         where C: FnOnce() -> E + 'a,
               E: Into<ErrorKind>,
     {
-        Box::new(self.then(|r| r.chain_err(callback)))
+        self.then(|r| r.chain_err(callback))._box()
+    }
+}
+
+/*
+ * Convenience method to box a trait object
+ * normally a Future
+ */
+pub trait Boxable {
+    type T;
+
+    fn _box(self) -> Box<Self::T>;
+}
+
+impl<'a, F> Boxable for F
+    where F: Future + 'a
+{
+    type T = F;
+
+    fn _box(self) -> Box<F> {
+        Box::new(self)
+    }
+}
+
+macro_rules! empty_future {
+    () => {
+        Ok(()).into_future()._box()
     }
 }
 

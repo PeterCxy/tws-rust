@@ -6,7 +6,7 @@ use futures::{Stream};
 use futures::future::{Future, IntoFuture};
 use futures::stream::{SplitSink};
 use protocol::protocol as proto;
-use protocol::util::{self, BoxFuture, FutureChainErr};
+use protocol::util::{self, BoxFuture, Boxable, FutureChainErr};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -45,7 +45,7 @@ impl TwsServer {
     }
 
     pub fn run<'a>(self) -> BoxFuture<'a, ()> {
-        Box::new(Server::bind(self.option.listen, &self.handle)
+        Server::bind(self.option.listen, &self.handle)
             .into_future()
             .chain_err(|| "Failed to bind to server")
             .and_then(move |server| {
@@ -65,7 +65,8 @@ impl TwsServer {
                         self.handle.spawn(work);
                         Ok(())
                     })
-            }))
+            })
+            ._box()
     }
 }
 
@@ -115,7 +116,7 @@ impl ServerSession {
         
         // TODO: Heartbeat (configurable interval)
         // TODO: Clean closed connections when doing heartbeats
-        Box::new(stream
+        stream
             .map_err(clone!(logger; |e| {
                 do_log!(logger, ERROR, "{:?}", e);
                 "session failed.".into()
@@ -134,7 +135,8 @@ impl ServerSession {
                 state.borrow_mut().remote_connections.clear();
 
                 Ok(())
-            })))
+            }))
+            ._box()
     }
 
     fn on_message<'a>(&self, msg: OwnedMessage) -> BoxFuture<'a, ()> {
@@ -143,9 +145,9 @@ impl ServerSession {
             OwnedMessage::Binary(bytes) => self.on_packet(proto::parse_packet(&self.option.passwd, &bytes)),
             OwnedMessage::Ping(msg) => {
                 self.writer.feed(OwnedMessage::Pong(msg));
-                Box::new(Ok(()).into_future())
+                empty_future!()
             },
-            _ => Box::new(Ok(()).into_future())
+            _ => empty_future!()
         }
     }
 
@@ -168,7 +170,7 @@ impl ServerSession {
             do_log!(self.logger, WARNING, "Authentication failure. Client: {}", state.client.unwrap());
             self.writer.feed(OwnedMessage::Close(None));
         }
-        Box::new(Ok(()).into_future())
+        empty_future!()
     }
 
     fn on_handshake<'a>(&self, addr: SocketAddr) -> BoxFuture<'a, ()> {
@@ -180,27 +182,26 @@ impl ServerSession {
         // Send anything back to activate the connection
         self.writer.feed(OwnedMessage::Text(String::from("hello")));
 
-        Box::new(Ok(()).into_future())
+        empty_future!()
     }
 
     fn on_connect<'a>(&self, conn_id: &str) -> BoxFuture<'a, ()> {
         let state = self.state.clone();
         let conn_id_owned = String::from(conn_id);
         let writer = self.writer.clone();
-        Box::new(
-            RemoteConnection::connect(conn_id, self.logger.clone(), self.writer.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
-                .map(clone!(writer, conn_id_owned; |conn| {
-                    writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, true)));
-                    state.borrow_mut().remote_connections.insert(conn_id_owned, conn);
-                }))
-                .then(clone!(writer, conn_id_owned; |r| {
-                    // TODO: Log
-                    if r.is_err() {
-                        writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
-                    }
-                    Ok(())
-                }))
-        )
+        RemoteConnection::connect(conn_id, self.logger.clone(), self.writer.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
+            .map(clone!(writer, conn_id_owned; |conn| {
+                writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, true)));
+                state.borrow_mut().remote_connections.insert(conn_id_owned, conn);
+            }))
+            .then(clone!(writer, conn_id_owned; |r| {
+                // TODO: Log
+                if r.is_err() {
+                    writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
+                }
+                Ok(())
+            }))
+            ._box()
     }
 
     fn on_connect_state<'a>(&self, conn_id: &str, ok: bool) -> BoxFuture<'a, ()> {
@@ -211,7 +212,7 @@ impl ServerSession {
             }
         }
         // Client side will not send ok = false.
-        Box::new(Ok(()).into_future())
+        empty_future!()
     }
 
     fn on_data<'a>(&self, conn_id: &str, data: &[u8]) -> BoxFuture<'a, ()> {
@@ -219,7 +220,7 @@ impl ServerSession {
         if let Some(conn) = conns.get(conn_id) {
             conn.send(data);
         }
-        Box::new(Ok(()).into_future())
+        empty_future!()
     }
 }
 
@@ -239,7 +240,7 @@ impl RemoteConnection {
     ) -> BoxFuture<'a, RemoteConnection> {
         let conn_id_owned = String::from(conn_id);
 
-        Box::new(TcpStream::connect(addr, &handle.clone())
+        TcpStream::connect(addr, &handle.clone())
             .chain_err(|| "Connection failed")
             .map(move |s| {
                 // Convert the client into two halves
@@ -251,7 +252,7 @@ impl RemoteConnection {
                 // Forward remote packets to client
                 let stream_work = stream.for_each(clone!(client_writer, conn_id_owned; |p| {
                     client_writer.feed(OwnedMessage::Binary(proto::data_build(&conn_id_owned, &p)));
-                    Ok(()).into_future()
+                    Ok(())
                 })).map_err(clone!(logger, conn_id_owned; |e| {
                     do_log!(logger, ERROR, "[{}] Remote => Client side error {:?}", conn_id_owned, e);
                 })).map(|_| ());
@@ -284,7 +285,8 @@ impl RemoteConnection {
                     logger,
                     remote_writer
                 }
-            }))
+            })
+            ._box()
     }
 
     /*
