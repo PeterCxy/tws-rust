@@ -155,21 +155,14 @@ impl<'a, F> FutureChainErr<'a, F::Item> for F
  * Convenience method to box a trait object
  * normally a Future
  */
-pub trait Boxable {
-    type T;
-
-    fn _box(self) -> Box<Self::T>;
-}
-
-impl<'a, F> Boxable for F
-    where F: Future + 'a
-{
-    type T = F;
-
-    fn _box(self) -> Box<F> {
+pub trait Boxable: Sized {
+    fn _box(self) -> Box<Self> {
         Box::new(self)
     }
 }
+
+impl<'a, F> Boxable for F
+    where F: Future + 'a {}
 
 macro_rules! empty_future {
     () => {
