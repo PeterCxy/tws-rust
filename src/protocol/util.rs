@@ -376,7 +376,7 @@ pub trait EventSource<T, U> where T: Eq {
  * work using `select` combinator.
  */
 pub struct HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
-    timeout: u64,
+    timeout: u64, // Milliseconds
     writer: Rc<BufferedWriter<S>>,
     heartbeat_received: Rc<Cell<bool>>
 }
