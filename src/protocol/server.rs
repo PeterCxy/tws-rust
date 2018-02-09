@@ -45,6 +45,9 @@ impl TwsServer {
     }
 
     pub fn run<'a>(self) -> BoxFuture<'a, ()> {
+        let option = self.option.clone();
+        let logger = self.logger.clone();
+        let handle = self.handle.clone();
         Server::bind(self.option.listen, &self.handle)
             .into_future()
             .chain_err(|| "Failed to bind to server")
@@ -52,15 +55,12 @@ impl TwsServer {
                 server.incoming()
                     .map_err(|_| "Failed to accept connections".into())
                     .for_each(move |(upgrade, addr)| {
-                        let local_option = self.option.clone();
-                        let local_logger = self.logger.clone();
-                        let local_handle = self.handle.clone();
                         let work = upgrade.accept()
                             .chain_err(|| "Failed to accept connection.")
-                            .and_then(move |(client, _)| {
-                                ServerSession::new(local_option, local_logger, local_handle)
+                            .and_then(clone!(option, logger, handle; |(client, _)| {
+                                ServerSession::new(option, logger, handle)
                                     .run(client, addr)
-                            })
+                            }))
                             .map_err(|_| ());
                         self.handle.spawn(work);
                         Ok(())
@@ -126,7 +126,7 @@ impl ServerSession {
             .map(|_| ())
             .map_err(|_| ())
             .select(sink_write)
-            .then(clone!(state, logger; |_r| {
+            .then(clone!(state, logger; |_| {
                 do_log!(logger, INFO, "Session finished.");
 
                 // Clean-up job
@@ -201,7 +201,7 @@ impl ServerSession {
                 }));
 
                 // Remote connection closed
-                conn.subscribe(RemoteConnectionEvents::Close, clone!(writer, state, conn_id_owned; |_r| {
+                conn.subscribe(RemoteConnectionEvents::Close, clone!(writer, state, conn_id_owned; |_| {
                     // Call shared clean-up code for this.
                     Self::close_conn(&mut state.borrow_mut(), &writer, &conn_id_owned);
                 }));
@@ -321,7 +321,7 @@ impl RemoteConnection {
                 // Once one of them is finished, just tear down the whole
                 // channel.
                 handle.spawn(stream_work.select(sink_work)
-                    .then(clone!(emitter, logger, conn_id_owned; |_r| {
+                    .then(clone!(emitter, logger, conn_id_owned; |_| {
                         // Clean-up job upon finishing
                         // No matter if there is any error.
                         do_log!(logger, INFO, "[{}] Channel closing.", conn_id_owned);

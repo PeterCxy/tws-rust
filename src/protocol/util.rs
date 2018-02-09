@@ -50,7 +50,7 @@ macro_rules! clone {
             move || { $body }
         }
     );
-    ($($n:ident),+; |$($p:ident),+| $body:block) => (
+    ($($n:ident),+; |$($p:pat),+| $body:block) => (
         {
             $( let $n = $n.clone(); )+
             move |$($p),+| { $body }
