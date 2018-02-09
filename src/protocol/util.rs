@@ -64,7 +64,7 @@ macro_rules! unwrap {
             match $r {
                 $t => Some($r),
                 x => {
-                    //panic!("Type mismatch: expected {}, found {:?}", stringify!($t), x);
+                    println!("Type mismatch: expected {}, found {:?}", stringify!($t), x);
                     None
                 }
             }

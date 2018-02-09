@@ -264,6 +264,7 @@ enum RemoteConnectionEvents {
     Close
 }
 
+#[derive(Debug)]
 enum RemoteConnectionValues {
     Nothing,
     Packet(BytesMut)
