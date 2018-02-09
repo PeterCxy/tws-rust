@@ -283,7 +283,7 @@ impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
         let ref mut state = self.state.borrow_mut();
         if !state.finished {
             state.queue.push(item);
-            notify_task(&state.task);
+            Self::notify_task(&state.task);
         }
     }
 
@@ -294,28 +294,27 @@ impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
         let ref mut state = self.state.borrow_mut();
         if !state.finished {
             state.finished = true;
-            notify_task(&state.task);
+            Self::notify_task(&state.task);
         }
     }
+
+    /*
+     * Convenience method to notify a task in Option<Task>
+     * The task must be notified if a stream has something
+     * new to send or if the stream is finished.
+     * Failing to do so will cause the stream not being polled
+     * any more.
+     */
+    fn notify_task(task: &Option<Task>) {
+        if let Some(ref task) = *task {
+            task.notify();
+        }
+}
 }
 
 impl<S: 'static + Sink> Drop for BufferedWriter<S> where S::SinkItem: Debug {
     fn drop(&mut self) {
         self.close();
-    }
-}
-
-/*
- * Convenience method to notify a task in Option<Task>
- * The task must be notified if a stream has something
- * new to send or if the stream is finished.
- * Failing to do so will cause the stream not being polled
- * any more.
- * This is needed in BufferedWriter.
- */
-fn notify_task(task: &Option<Task>) {
-    if let Some(ref task) = *task {
-        task.notify();
     }
 }
 
