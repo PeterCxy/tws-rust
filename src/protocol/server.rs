@@ -1,12 +1,12 @@
 /*
  * Server-side concrete implementation of TWS
  */
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{Stream};
 use futures::future::{Future, IntoFuture};
 use futures::stream::{SplitSink};
 use protocol::protocol as proto;
-use protocol::util::{self, BoxFuture, Boxable, FutureChainErr};
+use protocol::util::{self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -115,7 +115,6 @@ impl ServerSession {
         }));
         
         // TODO: Heartbeat (configurable interval)
-        // TODO: Clean closed connections when doing heartbeats
         stream
             .map_err(clone!(logger; |e| {
                 do_log!(logger, ERROR, "{:?}", e);
@@ -189,14 +188,40 @@ impl ServerSession {
         let state = self.state.clone();
         let conn_id_owned = String::from(conn_id);
         let writer = self.writer.clone();
-        RemoteConnection::connect(conn_id, self.logger.clone(), self.writer.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
-            .map(clone!(writer, conn_id_owned; |conn| {
+        let logger = self.logger.clone();
+        RemoteConnection::connect(conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
+            .map(clone!(writer, logger, state, conn_id_owned; |conn| {
+                // Subscribe to remote events
+                // Remote => Client
+                conn.subscribe(RemoteConnectionEvents::Data, clone!(writer, conn_id_owned; |data| {
+                    unwrap!(&RemoteConnectionValues::Packet(ref data), data, ());
+
+                    // Forward data to client.
+                    writer.feed(OwnedMessage::Binary(proto::data_build(&conn_id_owned, data)))
+                }));
+
+                // Remote connection closed
+                conn.subscribe(RemoteConnectionEvents::Close, clone!(writer, state, conn_id_owned; |_r| {
+                    // Call shared clean-up code for this.
+                    Self::close_conn(&mut state.borrow_mut(), &writer, &conn_id_owned);
+                }));
+
+                // Notify the client that this connection is now up.
+                do_log!(logger, INFO, "[{}] Connection estabilished.", conn_id_owned);
                 writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, true)));
+
+                // Store the connection inside the table.
                 state.borrow_mut().remote_connections.insert(conn_id_owned, conn);
             }))
-            .then(clone!(writer, conn_id_owned; |r| {
-                // TODO: Log
+            .then(clone!(writer, logger, conn_id_owned; |r| {
                 if r.is_err() {
+                    // The connection has failed.
+                    // If it fails here, then the connection
+                    // has not been set up yet.
+                    // Thus, we only need to notify the client
+                    // about this.
+                    // We do not need any clean-up job.
+                    do_log!(logger, ERROR, "[{}] Failed to establish connection: {:?}", conn_id_owned, r.unwrap_err());
                     writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
                 }
                 Ok(())
@@ -206,10 +231,8 @@ impl ServerSession {
 
     fn on_connect_state<'a>(&self, conn_id: &str, ok: bool) -> BoxFuture<'a, ()> {
         if !ok {
-            let ref mut conns = self.state.borrow_mut().remote_connections;
-            if conns.contains_key(conn_id) {
-                conns.remove(conn_id);
-            }
+            // Call shared clean-up code to clean up the connection.
+            Self::close_conn(&mut self.state.borrow_mut(), &self.writer, conn_id);
         }
         // Client side will not send ok = false.
         empty_future!()
@@ -222,19 +245,41 @@ impl ServerSession {
         }
         empty_future!()
     }
+
+    // Clean-up job after a connection is closed.
+    fn close_conn(state: &mut ServerSessionState, writer: &util::BufferedWriter<ClientSink>, conn_id: &str) {
+        let ref mut conns = state.remote_connections;
+        if conns.contains_key(conn_id) {
+            conns.remove(conn_id);
+
+            // Notify the client that this connection has been closed.
+            writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
+        }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum RemoteConnectionEvents {
+    Data,
+    Close
+}
+
+enum RemoteConnectionValues {
+    Nothing,
+    Packet(BytesMut)
 }
 
 struct RemoteConnection {
     conn_id: String,
     logger: util::Logger,
-    remote_writer: Rc<util::BufferedWriter<RemoteSink>>
+    remote_writer: Rc<util::BufferedWriter<RemoteSink>>,
+    event_emitter: RcEventEmitter<RemoteConnectionEvents, RemoteConnectionValues>
 }
 
 impl RemoteConnection {
     fn connect<'a>(
         conn_id: &str,
         logger: util::Logger,
-        client_writer: Rc<util::BufferedWriter<ClientSink>>,
         addr: &SocketAddr,
         handle: Handle
     ) -> BoxFuture<'a, RemoteConnection> {
@@ -243,6 +288,10 @@ impl RemoteConnection {
         TcpStream::connect(addr, &handle.clone())
             .chain_err(|| "Connection failed")
             .map(move |s| {
+                // The communication channel between this connection
+                // and the parent ServerSession
+                let emitter = util::new_emitter();
+
                 // Convert the client into two halves
                 let (sink, stream) = s.framed(BytesCodec::new()).split();
 
@@ -250,14 +299,16 @@ impl RemoteConnection {
                 let remote_writer = Rc::new(util::BufferedWriter::new());
 
                 // Forward remote packets to client
-                let stream_work = stream.for_each(clone!(client_writer, conn_id_owned; |p| {
-                    client_writer.feed(OwnedMessage::Binary(proto::data_build(&conn_id_owned, &p)));
+                let stream_work = stream.for_each(clone!(emitter, logger, conn_id_owned; |p| {
+                    do_log!(logger, INFO, "[{}] received {} bytes from remote", conn_id_owned, p.len());
+                    emitter.borrow().emit(RemoteConnectionEvents::Data, RemoteConnectionValues::Packet(p));
                     Ok(())
                 })).map_err(clone!(logger, conn_id_owned; |e| {
                     do_log!(logger, ERROR, "[{}] Remote => Client side error {:?}", conn_id_owned, e);
                 })).map(|_| ());
 
                 // Forward client packets to remote
+                // Client packets should be sent through `send` method.
                 let sink_work = remote_writer.run(sink)
                     .map_err(clone!(logger, conn_id_owned; |e| {
                         do_log!(logger, ERROR, "[{}] Client => Remote side error {:?}", conn_id_owned, e);
@@ -270,11 +321,11 @@ impl RemoteConnection {
                 // Once one of them is finished, just tear down the whole
                 // channel.
                 handle.spawn(stream_work.select(sink_work)
-                    .then(clone!(client_writer, logger, conn_id_owned; |_r| {
+                    .then(clone!(emitter, logger, conn_id_owned; |_r| {
                         // Clean-up job upon finishing
                         // No matter if there is any error.
                         do_log!(logger, INFO, "[{}] Channel closing.", conn_id_owned);
-                        client_writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
+                        emitter.borrow().emit(RemoteConnectionEvents::Close, RemoteConnectionValues::Nothing);
                         Ok(())
                     })));
 
@@ -283,7 +334,8 @@ impl RemoteConnection {
                 RemoteConnection {
                     conn_id: conn_id_owned,
                     logger,
-                    remote_writer
+                    remote_writer,
+                    event_emitter: emitter
                 }
             })
             ._box()
@@ -300,6 +352,12 @@ impl RemoteConnection {
 
     fn close(&self) {
         self.remote_writer.close();
+    }
+}
+
+impl EventSource<RemoteConnectionEvents, RemoteConnectionValues> for RemoteConnection {
+    fn get_event_emitter(&self) -> RcEventEmitter<RemoteConnectionEvents, RemoteConnectionValues> {
+        self.event_emitter.clone()
     }
 }
 
