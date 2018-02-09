@@ -280,7 +280,7 @@ impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
      * Feed a new item into the sink
      */
     pub fn feed(&self, item: S::SinkItem) {
-        let ref mut state = self.state.borrow_mut();
+        let mut state = self.state.borrow_mut();
         if !state.finished {
             state.queue.push(item);
             Self::notify_task(&state.task);
@@ -291,7 +291,7 @@ impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
      * Mark as finished.
      */
     pub fn close(&self) {
-        let ref mut state = self.state.borrow_mut();
+        let mut state = self.state.borrow_mut();
         if !state.finished {
             state.finished = true;
             Self::notify_task(&state.task);

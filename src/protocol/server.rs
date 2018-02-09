@@ -170,7 +170,7 @@ impl ServerSession {
     }
 
     fn on_unknown<'a>(&self) -> BoxFuture<'a, ()> {
-        let ref state = self.state.borrow();
+        let state = self.state.borrow();
         if !state.handshaked {
             // Unknown packet received while not handshaked yet.
             // Close the connection.
@@ -181,7 +181,7 @@ impl ServerSession {
     }
 
     fn on_handshake<'a>(&self, addr: SocketAddr) -> BoxFuture<'a, ()> {
-        let ref mut state = self.state.borrow_mut();
+        let mut state = self.state.borrow_mut();
         do_log!(self.logger, INFO, "New session: {} <=> {}", state.client.unwrap(), addr);
         state.remote = Some(addr);
         state.handshaked = true;
