@@ -10,7 +10,10 @@ use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::str;
+use std::time::Duration;
 use time;
+use tokio_timer::{Interval, Timer};
+use websocket::OwnedMessage;
 
 /*
  * Abstrasct loggers
@@ -364,6 +367,70 @@ pub trait EventSource<T, U> where T: Eq {
     fn subscribe<F>(&self, ev_type: T, f: F) where F: 'static + Fn(&U) {
         let emitter = self.get_event_emitter();
         emitter.borrow_mut().subscribe(ev_type, f);
+    }
+}
+
+/*
+ * Shared heartbeat logic for WebSocket sessions.
+ * Takes the BufferedWriter for the session,
+ * runs a Futures loop that can be joint to the main
+ * work using `select` combinator.
+ */
+pub struct HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
+    timeout: u64,
+    writer: Rc<BufferedWriter<S>>,
+    heartbeat_received: Rc<RefCell<bool>>
+}
+
+impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
+    pub fn new(timeout: u64, writer: Rc<BufferedWriter<S>>) -> HeartbeatAgent<S> {
+        HeartbeatAgent {
+            timeout,
+            writer,
+            heartbeat_received: Rc::new(RefCell::new(true))
+        }
+    }
+
+    /*
+     * Set the flag that we have now received the heartbeat message
+     */
+    pub fn set_heartbeat_received(&self) {
+        *self.heartbeat_received.borrow_mut() = true;
+    }
+
+    /*
+     * Returns a future that sends a heartbeat
+     * for every interval of `timeout`.
+     * 
+     * If the next interval has passed but the 
+     * heartbeat_received flag is still `false`,
+     * then it considers the session to be timed
+     * out and throws an error, which will then
+     * propagate to the parent Futrue, causing
+     * the connection to be teared down.
+     * 
+     * Please always use a Select combinator
+     * to run this, instead of a Join combinator.
+     */
+    pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
+        let writer = self.writer.clone();
+        let heartbeat_received = self.heartbeat_received.clone();
+        Timer::default().interval(Duration::from_millis(self.timeout))
+            .map_err(|_| "Unknown error".into())
+            .for_each(move |_| {
+                if !*heartbeat_received.borrow() {
+                    // Close if no Pong is received within
+                    // a timeout period.
+                    writer.close();
+                    return Err("Timed out".into());
+                }
+
+                // Send Ping message
+                writer.feed(OwnedMessage::Ping(vec![]));
+                *heartbeat_received.borrow_mut() = false;
+                Ok(())
+            })
+            ._box()
     }
 }
 

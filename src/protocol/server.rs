@@ -6,7 +6,7 @@ use futures::{Stream};
 use futures::future::{Future, IntoFuture};
 use futures::stream::{SplitSink};
 use protocol::protocol as proto;
-use protocol::util::{self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr};
+use protocol::util::{self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -22,7 +22,8 @@ use websocket::client::async::Framed;
 #[derive(Clone)]
 pub struct TwsServerOption {
     pub listen: SocketAddr,
-    pub passwd: String
+    pub passwd: String,
+    pub timeout: u64
 }
 
 pub struct TwsServer {
@@ -85,16 +86,19 @@ struct ServerSession {
     logger: util::Logger,
     handle: Handle,
     writer: Rc<util::BufferedWriter<ClientSink>>,
+    heartbeat_agent: HeartbeatAgent<ClientSink>,
     state: Rc<RefCell<ServerSessionState>>
 }
 
 impl ServerSession {
     pub fn new(option: TwsServerOption, logger: util::Logger, handle: Handle) -> ServerSession {
+        let writer = Rc::new(util::BufferedWriter::new());
         ServerSession {
+            heartbeat_agent: HeartbeatAgent::new(option.timeout, writer.clone()),
             option,
             logger,
             handle,
-            writer: Rc::new(util::BufferedWriter::new()),
+            writer,
             state: Rc::new(RefCell::new(ServerSessionState {
                 remote: None,
                 client: None,
@@ -113,8 +117,10 @@ impl ServerSession {
             do_log!(logger, ERROR, "{:?}", e);
             ()
         }));
+        let heartbeat_work = self.heartbeat_agent.run().map_err(clone!(logger; |_| {
+            do_log!(logger, ERROR, "Session timed out.");
+        }));
         
-        // TODO: Heartbeat (configurable interval)
         stream
             .map_err(clone!(logger; |e| {
                 do_log!(logger, ERROR, "{:?}", e);
@@ -126,6 +132,7 @@ impl ServerSession {
             .map(|_| ())
             .map_err(|_| ())
             .select(sink_write)
+            .select2(heartbeat_work)
             .then(clone!(state, logger; |_| {
                 do_log!(logger, INFO, "Session finished.");
 
@@ -146,6 +153,10 @@ impl ServerSession {
                 self.writer.feed(OwnedMessage::Pong(msg));
                 empty_future!()
             },
+            OwnedMessage::Pong(_) => {
+                self.heartbeat_agent.set_heartbeat_received();
+                empty_future!()
+            }
             _ => empty_future!()
         }
     }

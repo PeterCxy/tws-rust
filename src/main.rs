@@ -7,6 +7,7 @@ extern crate sha2;
 extern crate time;
 extern crate tokio_core;
 extern crate tokio_io;
+extern crate tokio_timer;
 extern crate websocket;
 
 #[macro_use]
@@ -34,7 +35,8 @@ fn main() {
     let mut core = Core::new().unwrap();
     let mut server = TwsServer::new(core.handle(), TwsServerOption {
         listen: "127.0.0.1:23356".parse().unwrap(),
-        passwd: String::from("testpassword")
+        passwd: String::from("testpassword"),
+        timeout: 1000
     });
     server.on_log(|l, m| {
         println!("{:?}: {:?}", l, m);
