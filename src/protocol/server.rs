@@ -115,7 +115,6 @@ impl ServerSession {
         let (sink, stream) = client.split();
         let sink_write = self.writer.run(sink).map_err(clone!(logger; |e| {
             do_log!(logger, ERROR, "{:?}", e);
-            ()
         }));
         let heartbeat_work = self.heartbeat_agent.run().map_err(clone!(logger; |_| {
             do_log!(logger, ERROR, "Session timed out.");
@@ -129,9 +128,7 @@ impl ServerSession {
             .for_each(move |msg| {
                 self.on_message(msg)
             })
-            .map(|_| ())
-            .map_err(|_| ())
-            .select(sink_write)
+            .select2(sink_write)
             .select2(heartbeat_work)
             .then(clone!(state, logger; |_| {
                 do_log!(logger, INFO, "Session finished.");
