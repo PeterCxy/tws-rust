@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::str;
 use std::time::Duration;
 use time;
-use tokio_timer::{Interval, Timer};
+use tokio_timer::{Timer};
 use websocket::OwnedMessage;
 
 /*
