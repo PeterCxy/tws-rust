@@ -41,12 +41,20 @@ macro_rules! do_log {
     };
 }
 
-/*
- * Simulate a closure that clones
- * some environment variables and
- * take ownership of them by default.
- */
 macro_rules! clone {
+    /*
+     * Clone some members from a struct
+     * to the corresponding local variables.
+     */
+    ($s:ident, $($n:ident),+) => (
+        $ (let $n = $s.$n.clone(); )+
+    );
+
+    /*
+     * Simulate a closure that clones
+     * some environment variables and
+     * take ownership of them by default.
+     */
     ($($n:ident),+; || $body:block) => (
         {
             $( let $n = $n.clone(); )+

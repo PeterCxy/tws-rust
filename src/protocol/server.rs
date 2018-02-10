@@ -47,9 +47,7 @@ impl TwsServer {
     }
 
     pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
-        let option = self.option.clone();
-        let logger = self.logger.clone();
-        let handle = self.handle.clone();
+        clone!(self, option, logger, handle);
         Server::bind(self.option.listen, &self.handle)
             .into_future()
             .chain_err(|| "Failed to bind to server")
@@ -110,9 +108,8 @@ impl ServerSession {
     }
 
     pub fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
-        let state = self.state.clone();
+        clone!(self, state, logger);
         state.borrow_mut().client = Some(addr);
-        let logger = self.logger.clone();
         let (sink, stream) = client.split();
         let sink_write = self.writer.run(sink).map_err(clone!(logger; |e| {
             do_log!(logger, ERROR, "{:?}", e);
@@ -186,10 +183,8 @@ impl ServerSession {
     }
 
     fn on_connect(&self, conn_id: &str) {
-        let state = self.state.clone();
+        clone!(self, state, writer, logger);
         let conn_id_owned = String::from(conn_id);
-        let writer = self.writer.clone();
-        let logger = self.logger.clone();
         let conn_work = RemoteConnection::connect(conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
             .map(clone!(writer, logger, state, conn_id_owned; |conn| {
                 // Subscribe to remote events
