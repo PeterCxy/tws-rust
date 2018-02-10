@@ -90,7 +90,7 @@ struct ServerSession {
 }
 
 impl ServerSession {
-    pub fn new(option: TwsServerOption, logger: util::Logger, handle: Handle) -> ServerSession {
+    fn new(option: TwsServerOption, logger: util::Logger, handle: Handle) -> ServerSession {
         let writer = util::BufferedWriter::new();
         ServerSession {
             heartbeat_agent: HeartbeatAgent::new(option.timeout, writer.clone()),
@@ -107,7 +107,7 @@ impl ServerSession {
         }
     }
 
-    pub fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
+    fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
         clone!(self, state, logger);
         state.borrow_mut().client = Some(addr);
         let (sink, stream) = client.split();
