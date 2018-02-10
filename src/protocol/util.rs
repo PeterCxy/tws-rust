@@ -243,6 +243,9 @@ impl<I: Debug, E> Stream for BufferedStream<I, E> {
  * This is a workaround because Sink::send()
  * will consume ownership and will do flush()
  * each time we try to send an item.
+ * 
+ * The writer is cheaply clonable, allowing to
+ * be shared between multiple owners.
  */
 pub struct BufferedWriter<S: 'static + Sink> where S::SinkItem: Debug {
     state: Rc<RefCell<BufferedStreamState<S::SinkItem, S::SinkError>>>
@@ -312,9 +315,34 @@ impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
     }
 }
 
+/*
+ * Destructor implementation of BufferedWriter
+ * This should be customized because BufferedWriter
+ * itself is clonable.
+ */
 impl<S: 'static + Sink> Drop for BufferedWriter<S> where S::SinkItem: Debug {
     fn drop(&mut self) {
-        self.close();
+        // The state is shared between at least
+        // one BufferedStream and one BufferedWriter
+        // Therefore, when the reference count is
+        // less than 2, we can be sure that this
+        // will be the last BufferedWriter alive,
+        // and thus we can safely release the resource.
+        if Rc::strong_count(&self.state) <= 2 {
+            self.close();
+        }
+    }
+}
+
+/*
+ * BufferedWriter is clonable by just cloning the state
+ * allowing multiple ownership without two levels of `Rc`s
+ */
+impl <S: 'static + Sink> Clone for BufferedWriter<S> where S::SinkItem: Debug {
+    fn clone(&self) -> BufferedWriter<S> {
+        BufferedWriter {
+            state: self.state.clone()
+        }
     }
 }
 
@@ -377,12 +405,12 @@ pub trait EventSource<T, U> where T: Eq {
  */
 pub struct HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
     timeout: u64, // Milliseconds
-    writer: Rc<BufferedWriter<S>>,
+    writer: BufferedWriter<S>,
     heartbeat_received: Rc<Cell<bool>>
 }
 
 impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
-    pub fn new(timeout: u64, writer: Rc<BufferedWriter<S>>) -> HeartbeatAgent<S> {
+    pub fn new(timeout: u64, writer: BufferedWriter<S>) -> HeartbeatAgent<S> {
         HeartbeatAgent {
             timeout,
             writer,

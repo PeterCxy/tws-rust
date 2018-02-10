@@ -85,14 +85,14 @@ struct ServerSession {
     option: TwsServerOption,
     logger: util::Logger,
     handle: Handle,
-    writer: Rc<util::BufferedWriter<ClientSink>>,
+    writer: util::BufferedWriter<ClientSink>,
     heartbeat_agent: HeartbeatAgent<ClientSink>,
     state: Rc<RefCell<ServerSessionState>>
 }
 
 impl ServerSession {
     pub fn new(option: TwsServerOption, logger: util::Logger, handle: Handle) -> ServerSession {
-        let writer = Rc::new(util::BufferedWriter::new());
+        let writer = util::BufferedWriter::new();
         ServerSession {
             heartbeat_agent: HeartbeatAgent::new(option.timeout, writer.clone()),
             option,
@@ -281,7 +281,7 @@ enum RemoteConnectionValues {
 struct RemoteConnection {
     conn_id: String,
     logger: util::Logger,
-    remote_writer: Rc<util::BufferedWriter<RemoteSink>>,
+    remote_writer: util::BufferedWriter<RemoteSink>,
     event_emitter: RcEventEmitter<RemoteConnectionEvents, RemoteConnectionValues>
 }
 
@@ -305,7 +305,7 @@ impl RemoteConnection {
                 let (sink, stream) = s.framed(BytesCodec::new()).split();
 
                 // BufferedWriter for sending to remote
-                let remote_writer = Rc::new(util::BufferedWriter::new());
+                let remote_writer = util::BufferedWriter::new();
 
                 // Forward remote packets to client
                 let stream_work = stream.for_each(clone!(emitter, logger, conn_id_owned; |p| {
