@@ -180,7 +180,7 @@ struct BufferedStreamState<I, E> {
     marker: PhantomData<E>, // Placeholder
     queue: Vec<I>, // Items to be written
     finished: bool, // Whether this stream should finish on next poll()
-    task: Option<Task> // The Task driviog the stream
+    task: Option<Task> // The Task driving the stream
 }
 
 /*
@@ -210,7 +210,7 @@ impl<I: Debug, E> Stream for BufferedStream<I, E> {
     type Item = I;
     type Error = E;
 
-    fn poll(&mut self) ->  ::std::result::Result<Async<Option<I>>, E> {
+    fn poll(&mut self) -> ::std::result::Result<Async<Option<I>>, E> {
         let ref mut state = self.state.borrow_mut();
 
         // If the task has not been known yet
