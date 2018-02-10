@@ -47,7 +47,7 @@ macro_rules! clone {
      * to the corresponding local variables.
      */
     ($s:ident, $($n:ident),+) => (
-        $ (let $n = $s.$n.clone(); )+
+        $( let $n = $s.$n.clone(); )+
     );
 
     /*
