@@ -144,7 +144,7 @@ impl ServerSession {
             ._box()
     }
 
-    fn on_message<'a>(&self, msg: OwnedMessage) {
+    fn on_message(&self, msg: OwnedMessage) {
         match msg {
             OwnedMessage::Text(text) => self.on_packet(proto::parse_packet(&self.option.passwd, text.as_bytes())),
             OwnedMessage::Binary(bytes) => self.on_packet(proto::parse_packet(&self.option.passwd, &bytes)),
@@ -154,7 +154,7 @@ impl ServerSession {
         };
     }
 
-    fn on_packet<'a>(&self, packet: proto::Packet) {
+    fn on_packet(&self, packet: proto::Packet) {
         do_log!(self.logger, DEBUG, "{:?}", packet);
         match packet {
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
@@ -165,7 +165,7 @@ impl ServerSession {
         }
     }
 
-    fn on_unknown<'a>(&self) {
+    fn on_unknown(&self) {
         let state = self.state.borrow();
         if !state.handshaked {
             // Unknown packet received while not handshaked yet.
@@ -175,7 +175,7 @@ impl ServerSession {
         }
     }
 
-    fn on_handshake<'a>(&self, addr: SocketAddr) {
+    fn on_handshake(&self, addr: SocketAddr) {
         let mut state = self.state.borrow_mut();
         do_log!(self.logger, INFO, "New session: {} <=> {}", state.client.unwrap(), addr);
         state.remote = Some(addr);
@@ -185,7 +185,7 @@ impl ServerSession {
         self.writer.feed(OwnedMessage::Text(String::from("hello")));
     }
 
-    fn on_connect<'a>(&self, conn_id: &str) {
+    fn on_connect(&self, conn_id: &str) {
         let state = self.state.clone();
         let conn_id_owned = String::from(conn_id);
         let writer = self.writer.clone();
@@ -230,7 +230,7 @@ impl ServerSession {
         self.handle.spawn(conn_work);
     }
 
-    fn on_connect_state<'a>(&self, conn_id: &str, ok: bool) {
+    fn on_connect_state(&self, conn_id: &str, ok: bool) {
         if !ok {
             // Call shared clean-up code to clean up the connection.
             Self::close_conn(&mut self.state.borrow_mut(), &self.writer, conn_id);
@@ -238,7 +238,7 @@ impl ServerSession {
         // Client side will not send ok = false.
     }
 
-    fn on_data<'a>(&self, conn_id: &str, data: &[u8]) {
+    fn on_data(&self, conn_id: &str, data: &[u8]) {
         let ref conns = self.state.borrow().remote_connections;
         if let Some(conn) = conns.get(conn_id) {
             conn.send(data);
