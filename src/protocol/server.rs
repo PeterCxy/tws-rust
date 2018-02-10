@@ -126,9 +126,9 @@ impl ServerSession {
                 do_log!(logger, ERROR, "{:?}", e);
                 "session failed.".into()
             }))
-            .for_each(move |msg| -> Result<()> {
+            .for_each(move |msg| {
                 self.on_message(msg);
-                Ok(())
+                Ok(()) as Result<()>
             })
             .select2(sink_write)
             .select2(heartbeat_work)
