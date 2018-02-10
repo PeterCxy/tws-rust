@@ -2,6 +2,7 @@
  * Server-side concrete implementation of TWS
  */
 use bytes::{Bytes, BytesMut};
+use errors::Result;
 use futures::{Stream};
 use futures::future::{Future, IntoFuture};
 use futures::stream::{SplitSink};
@@ -125,8 +126,9 @@ impl ServerSession {
                 do_log!(logger, ERROR, "{:?}", e);
                 "session failed.".into()
             }))
-            .for_each(move |msg| {
-                self.on_message(msg)
+            .for_each(move |msg| -> Result<()> {
+                self.on_message(msg);
+                Ok(())
             })
             .select2(sink_write)
             .select2(heartbeat_work)
@@ -142,23 +144,17 @@ impl ServerSession {
             ._box()
     }
 
-    fn on_message<'a>(&self, msg: OwnedMessage) -> BoxFuture<'a, ()> {
+    fn on_message<'a>(&self, msg: OwnedMessage) {
         match msg {
             OwnedMessage::Text(text) => self.on_packet(proto::parse_packet(&self.option.passwd, text.as_bytes())),
             OwnedMessage::Binary(bytes) => self.on_packet(proto::parse_packet(&self.option.passwd, &bytes)),
-            OwnedMessage::Ping(msg) => {
-                self.writer.feed(OwnedMessage::Pong(msg));
-                empty_future!()
-            },
-            OwnedMessage::Pong(_) => {
-                self.heartbeat_agent.set_heartbeat_received();
-                empty_future!()
-            }
-            _ => empty_future!()
-        }
+            OwnedMessage::Ping(msg) => self.writer.feed(OwnedMessage::Pong(msg)),
+            OwnedMessage::Pong(_) => self.heartbeat_agent.set_heartbeat_received(),
+            _ => ()
+        };
     }
 
-    fn on_packet<'a>(&self, packet: proto::Packet) -> BoxFuture<'a, ()> {
+    fn on_packet<'a>(&self, packet: proto::Packet) {
         do_log!(self.logger, DEBUG, "{:?}", packet);
         match packet {
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
@@ -169,7 +165,7 @@ impl ServerSession {
         }
     }
 
-    fn on_unknown<'a>(&self) -> BoxFuture<'a, ()> {
+    fn on_unknown<'a>(&self) {
         let state = self.state.borrow();
         if !state.handshaked {
             // Unknown packet received while not handshaked yet.
@@ -177,10 +173,9 @@ impl ServerSession {
             do_log!(self.logger, WARNING, "Authentication failure. Client: {}", state.client.unwrap());
             self.writer.feed(OwnedMessage::Close(None));
         }
-        empty_future!()
     }
 
-    fn on_handshake<'a>(&self, addr: SocketAddr) -> BoxFuture<'a, ()> {
+    fn on_handshake<'a>(&self, addr: SocketAddr) {
         let mut state = self.state.borrow_mut();
         do_log!(self.logger, INFO, "New session: {} <=> {}", state.client.unwrap(), addr);
         state.remote = Some(addr);
@@ -188,16 +183,14 @@ impl ServerSession {
 
         // Send anything back to activate the connection
         self.writer.feed(OwnedMessage::Text(String::from("hello")));
-
-        empty_future!()
     }
 
-    fn on_connect<'a>(&self, conn_id: &str) -> BoxFuture<'a, ()> {
+    fn on_connect<'a>(&self, conn_id: &str) {
         let state = self.state.clone();
         let conn_id_owned = String::from(conn_id);
         let writer = self.writer.clone();
         let logger = self.logger.clone();
-        RemoteConnection::connect(conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
+        let conn_work = RemoteConnection::connect(conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
             .map(clone!(writer, logger, state, conn_id_owned; |conn| {
                 // Subscribe to remote events
                 // Remote => Client
@@ -233,25 +226,23 @@ impl ServerSession {
                     writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
                 }
                 Ok(())
-            }))
-            ._box()
+            }));
+        self.handle.spawn(conn_work);
     }
 
-    fn on_connect_state<'a>(&self, conn_id: &str, ok: bool) -> BoxFuture<'a, ()> {
+    fn on_connect_state<'a>(&self, conn_id: &str, ok: bool) {
         if !ok {
             // Call shared clean-up code to clean up the connection.
             Self::close_conn(&mut self.state.borrow_mut(), &self.writer, conn_id);
         }
         // Client side will not send ok = false.
-        empty_future!()
     }
 
-    fn on_data<'a>(&self, conn_id: &str, data: &[u8]) -> BoxFuture<'a, ()> {
+    fn on_data<'a>(&self, conn_id: &str, data: &[u8]) {
         let ref conns = self.state.borrow().remote_connections;
         if let Some(conn) = conns.get(conn_id) {
             conn.send(data);
         }
-        empty_future!()
     }
 
     // Clean-up job after a connection is closed.
