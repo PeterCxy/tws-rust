@@ -338,7 +338,7 @@ impl<S: 'static + Sink> Drop for BufferedWriter<S> where S::SinkItem: Debug {
  * BufferedWriter is clonable by just cloning the state
  * allowing multiple ownership without two levels of `Rc`s
  */
-impl <S: 'static + Sink> Clone for BufferedWriter<S> where S::SinkItem: Debug {
+impl<S: 'static + Sink> Clone for BufferedWriter<S> where S::SinkItem: Debug {
     fn clone(&self) -> BufferedWriter<S> {
         BufferedWriter {
             state: self.state.clone()
