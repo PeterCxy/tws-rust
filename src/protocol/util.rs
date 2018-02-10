@@ -309,7 +309,7 @@ impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
         if let Some(ref task) = *task {
             task.notify();
         }
-}
+    }
 }
 
 impl<S: 'static + Sink> Drop for BufferedWriter<S> where S::SinkItem: Debug {
