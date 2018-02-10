@@ -46,7 +46,7 @@ impl TwsServer {
         self.logger = Rc::new(logger);
     }
 
-    pub fn run<'a>(self) -> BoxFuture<'a, ()> {
+    pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
         let option = self.option.clone();
         let logger = self.logger.clone();
         let handle = self.handle.clone();
@@ -64,7 +64,7 @@ impl TwsServer {
                                     .run(client, addr)
                             }))
                             .map_err(|_| ());
-                        self.handle.spawn(work);
+                        handle.spawn(work);
                         Ok(())
                     })
             })
