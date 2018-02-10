@@ -42,7 +42,7 @@ impl TwsServer {
         }
     }
 
-    pub fn on_log<F: 'static + Fn(util::LogLevel, &str)>(&mut self, logger: F) {
+    pub fn on_log<F>(&mut self, logger: F) where F: 'static + Fn(util::LogLevel, &str) {
         self.logger = Rc::new(logger);
     }
 
