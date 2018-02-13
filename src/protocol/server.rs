@@ -51,20 +51,21 @@ impl TwsServer {
         Server::bind(self.option.listen, &self.handle)
             .into_future()
             .chain_err(|| "Failed to bind to server")
-            .and_then(move |server| {
+            .map(move |server| {
                 server.incoming()
                     .map_err(|_| "Failed to accept connections".into())
-                    .for_each(move |(upgrade, addr)| {
-                        let work = upgrade.accept()
-                            .chain_err(|| "Failed to accept connection.")
-                            .and_then(clone!(option, logger, handle; |(client, _)| {
-                                ServerSession::new(option, logger, handle)
-                                    .run(client, addr)
-                            }))
-                            .map_err(|_| ());
-                        handle.spawn(work);
-                        Ok(())
-                    })
+            })
+            .flatten_stream()
+            .for_each(move |(upgrade, addr)| {
+                let work = upgrade.accept()
+                    .chain_err(|| "Failed to accept connection.")
+                    .and_then(clone!(option, logger, handle; |(client, _)| {
+                        ServerSession::new(option, logger, handle)
+                            .run(client, addr)
+                    }))
+                    .map_err(|_| ());
+                handle.spawn(work);
+                Ok(())
             })
             ._box()
     }
