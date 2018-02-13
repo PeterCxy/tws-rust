@@ -28,9 +28,18 @@ mod errors {
 }
 
 use protocol::server::{TwsServerOption, TwsServer};
+use std::env;
 use tokio_core::reactor::Core;
 
 fn main() {
+    match &env::args().nth(1).expect("Argument needed")[..] {
+        "server" => test_server(),
+        _ => println!("Unkown argument")
+    }
+}
+
+// TEMPORARY TEST CODE FOR SERVER
+fn test_server() {
     //println!("Hello, world!");
     let mut core = Core::new().unwrap();
     let mut server = TwsServer::new(core.handle(), TwsServerOption {
