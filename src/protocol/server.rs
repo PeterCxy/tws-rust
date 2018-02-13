@@ -211,6 +211,7 @@ impl ServerSession {
 
                 // Clean-up job
                 // Drop all the connections
+                // will be closed by the implementation of Drop
                 state.borrow_mut().remote_connections.clear();
 
                 Ok(())
@@ -463,6 +464,7 @@ impl RemoteConnection {
     }
 
     fn close(&self) {
+        // Close the underlying stream (connection)
         self.remote_writer.close();
     }
 }
@@ -475,6 +477,7 @@ impl EventSource<RemoteConnectionEvents, RemoteConnectionValues> for RemoteConne
 
 impl Drop for RemoteConnection {
     fn drop(&mut self) {
+        // Once a connection is dropped, close it immediately.
         self.close();
     }
 }
