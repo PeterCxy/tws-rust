@@ -1,5 +1,8 @@
 /*
  * Server-side concrete implementation of TWS
+ * 
+ * Refer to `protocol.rs` for detailed description
+ * of the protocol.
  */
 use bytes::{Bytes, BytesMut};
 use errors::Result;
@@ -27,10 +30,23 @@ pub struct TwsServerOption {
     pub timeout: u64
 }
 
+/*
+ * A TWS Server instance.
+ * 
+ * Listens for incoming WebSocket connections
+ * and estabilishes individual TWS sessions
+ * on each connection. It then forwards data
+ * packets from the client to the designated
+ * remote server as is requested by the client.
+ * 
+ * Each TWS connection can handle multiple
+ * `logical connections` which correspond
+ * to one TCP connection to the remote.
+ */
 pub struct TwsServer {
     option: TwsServerOption,
-    handle: Handle,
-    logger: util::Logger
+    handle: Handle, // Tokio Handle
+    logger: util::Logger // An abstract logger (see `util.rs` for details)
 }
 
 impl TwsServer {
@@ -46,20 +62,36 @@ impl TwsServer {
         self.logger = Rc::new(logger);
     }
 
+    /*
+     * Execute this instance and returns a Future
+     * that represents the execution.
+     * 
+     * The future should be polled in order to have
+     * the server working correctly.
+     */
     pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
         clone!(self, option, logger, handle);
+
+        // Bind the port first
+        // this is a Result, we convert it to Future.
         Server::bind(self.option.listen, &self.handle)
             .into_future()
             .chain_err(|| "Failed to bind to server")
             .map(move |server| {
+                // The WebSocket server is now listening.
+                // Retrieve the incoming connections as a stream
                 server.incoming()
                     .map_err(|_| "Failed to accept connections".into())
             })
-            .flatten_stream()
+            .flatten_stream() // Convert the future to the stream of connections it contains.
             .for_each(move |(upgrade, addr)| {
+                // Spawn a separate task for every incoming connection
+                // on the event loop.
                 let work = upgrade.accept()
                     .chain_err(|| "Failed to accept connection.")
                     .and_then(clone!(option, logger, handle; |(client, _)| {
+                        // Create a new ServerSession object
+                        // in charge of every connection.
                         ServerSession::new(option, logger, handle)
                             .run(client, addr)
                     }))
@@ -71,23 +103,34 @@ impl TwsServer {
     }
 }
 
+// Shorthands for sending sides of the streams
 type ClientSink = SplitSink<Framed<TcpStream, MessageCodec<OwnedMessage>>>;
 type RemoteSink = SplitSink<Framed<TcpStream, BytesCodec>>;
 
+/*
+ * The state of a single TWS session.
+ */
 struct ServerSessionState {
-    remote: Option<SocketAddr>,
-    client: Option<SocketAddr>,
-    handshaked: bool,
-    remote_connections: HashMap<String, RemoteConnection>
+    remote: Option<SocketAddr>, // The remote address (will be available after handshake)
+    client: Option<SocketAddr>, // The client address (will be available when spawned)
+    handshaked: bool, // Have we finished the handshake?
+    remote_connections: HashMap<String, RemoteConnection> // Map from connection ids to remote connection objects.
 }
 
+/*
+ * A single TWS session.
+ * 
+ * This manages communication within a single client
+ * connection. The session has a designated remote
+ * server, which should be determined by the client.
+ */
 struct ServerSession {
-    option: TwsServerOption,
+    option: TwsServerOption, // Options should be passed from TwsServer instance.
     logger: util::Logger,
-    handle: Handle,
-    writer: SharedWriter<ClientSink>,
-    heartbeat_agent: HeartbeatAgent<ClientSink>,
-    state: Rc<RefCell<ServerSessionState>>
+    handle: Handle, // Tokio handle
+    writer: SharedWriter<ClientSink>, // Writer for sending packets to the client side
+    heartbeat_agent: HeartbeatAgent<ClientSink>, // Agent for doing heartbeats
+    state: Rc<RefCell<ServerSessionState>> // The mutable state of this session
 }
 
 impl ServerSession {
@@ -108,28 +151,61 @@ impl ServerSession {
         }
     }
 
+    /*
+     * Start this session.
+     * 
+     * Consumes self, the stream representing the client,
+     * and the client address. Returns a future representing
+     * this session, which should be spawned on the event
+     * loop.
+     */
     fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
         clone!(self, state, logger);
+
+        // Now we have the client address
         state.borrow_mut().client = Some(addr);
+
+        // Split the client into outgoing and incoming sides.
         let (sink, stream) = client.split();
+
+        // Obtain a future representing the writing tasks.
         let sink_write = self.writer.run(sink).map_err(clone!(logger; |e| {
             do_log!(logger, ERROR, "{:?}", e);
         }));
+
+        // Obtain a future to do heartbeats.
         let heartbeat_work = self.heartbeat_agent.run().map_err(clone!(logger; |_| {
             do_log!(logger, ERROR, "Session timed out.");
         }));
         
+        // The main task
+        // which also joins the above two sub-tasks by `select2`
+        // The resulting task will execute each of these tasks
+        // and finish once any of the tasks finishes.
+        // i.e. Once the WebSocket connection closes, everything here
+        //      also stops.
+        // If `join` is used instead, then the task here
+        // will execute forever, which is not proper behavior
+        // for a session.
         stream
             .map_err(clone!(logger; |e| {
                 do_log!(logger, ERROR, "{:?}", e);
                 "session failed.".into()
             }))
             .for_each(move |msg| {
+                // Process each message from the client
+                // Note that this does not return a future.
+                // Anything that happens for processing
+                // the message and requires doing things
+                // on the event loop should spawn a task
+                // instead of returning it.
+                // In order not to block the main WebSocket
+                // stream.
                 self.on_message(msg);
                 Ok(()) as Result<()>
             })
-            .select2(sink_write)
-            .select2(heartbeat_work)
+            .select2(sink_write) // Execute task for the writer
+            .select2(heartbeat_work) // Execute task for heartbeats
             .then(clone!(state, logger; |_| {
                 do_log!(logger, INFO, "Session finished.");
 
@@ -144,9 +220,14 @@ impl ServerSession {
 
     fn on_message(&self, msg: OwnedMessage) {
         match msg {
+            // Control / Data packets can be in either Text or Binary form.
             OwnedMessage::Text(text) => self.on_packet(proto::parse_packet(&self.option.passwd, text.as_bytes())),
             OwnedMessage::Binary(bytes) => self.on_packet(proto::parse_packet(&self.option.passwd, &bytes)),
+
+            // Send pong back to keep connection alive
             OwnedMessage::Ping(msg) => self.writer.feed(OwnedMessage::Pong(msg)),
+
+            // Notify the heartbeat agent that a pong is received.
             OwnedMessage::Pong(_) => self.heartbeat_agent.set_heartbeat_received(),
             _ => ()
         };
@@ -167,6 +248,7 @@ impl ServerSession {
         let state = self.state.borrow();
         if !state.handshaked {
             // Unknown packet received while not handshaked yet.
+            // This is normally due to wrong credentials.
             // Close the connection.
             do_log!(self.logger, WARNING, "Authentication failure. Client: {}", state.client.unwrap());
             self.writer.feed(OwnedMessage::Close(None));
@@ -176,13 +258,20 @@ impl ServerSession {
     fn on_handshake(&self, addr: SocketAddr) {
         let mut state = self.state.borrow_mut();
         do_log!(self.logger, INFO, "New session: {} <=> {}", state.client.unwrap(), addr);
+
+        // Remote address is now available.
         state.remote = Some(addr);
+
+        // Set handshake flag to true
         state.handshaked = true;
 
         // Send anything back to activate the connection
         self.writer.feed(OwnedMessage::Text(String::from("hello")));
     }
 
+    /*
+     * Open a new logical connection inside this channel.
+     */
     fn on_connect(&self, conn_id: &str) {
         clone!(self, state, writer, logger);
         let conn_id_owned = String::from(conn_id);
@@ -228,7 +317,7 @@ impl ServerSession {
 
     fn on_connect_state(&self, conn_id: &str, ok: bool) {
         if !ok {
-            // Call shared clean-up code to clean up the connection.
+            // Call shared clean-up code to clean up the logical connection.
             Self::close_conn(&mut self.state.borrow_mut(), &self.writer, conn_id);
         }
         // Client side will not send ok = false.
@@ -237,22 +326,26 @@ impl ServerSession {
     fn on_data(&self, conn_id: &str, data: &[u8]) {
         let ref conns = self.state.borrow().remote_connections;
         if let Some(conn) = conns.get(conn_id) {
+            // If the designated connection exists, just forward the data.
             conn.send(data);
         }
     }
 
-    // Clean-up job after a connection is closed.
+    // Clean-up job after a logical connection is closed.
     fn close_conn(state: &mut ServerSessionState, writer: &SharedWriter<ClientSink>, conn_id: &str) {
         let ref mut conns = state.remote_connections;
         if conns.contains_key(conn_id) {
             conns.remove(conn_id);
 
-            // Notify the client that this connection has been closed.
+            // Notify the client that this logical connection has been closed.
             writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
         }
     }
 }
 
+/*
+ * Events and values that may be emitted by RemoteConnection
+ */
 #[derive(PartialEq, Eq)]
 enum RemoteConnectionEvents {
     Data,
@@ -265,10 +358,18 @@ enum RemoteConnectionValues {
     Packet(BytesMut)
 }
 
+/*
+ * A connection to remote server
+ * corresponding to a logical connection
+ * inside one WebSocket session.
+ * 
+ * This emits events for remote packets.
+ * Should be subscribed to by the ServerSession.
+ */
 struct RemoteConnection {
     conn_id: String,
     logger: util::Logger,
-    remote_writer: SharedWriter<RemoteSink>,
+    remote_writer: SharedWriter<RemoteSink>, // Writer of remote connection
     event_emitter: RcEventEmitter<RemoteConnectionEvents, RemoteConnectionValues>
 }
 
