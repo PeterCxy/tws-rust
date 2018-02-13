@@ -237,22 +237,37 @@ impl ServerSession {
         do_log!(self.logger, DEBUG, "{:?}", packet);
         match packet {
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
-            proto::Packet::Connect(conn_id) => self.on_connect(conn_id),
-            proto::Packet::ConnectionState((conn_id, ok)) => self.on_connect_state(conn_id, ok),
-            proto::Packet::Data((conn_id, data)) => self.on_data(conn_id, data),
+
+            // Everything here have to happen after handshake.
+            proto::Packet::Connect(conn_id) =>
+                if self.check_handshaked() { self.on_connect(conn_id) },
+            proto::Packet::ConnectionState((conn_id, ok)) =>
+                if self.check_handshaked() { self.on_connect_state(conn_id, ok) },
+            proto::Packet::Data((conn_id, data)) =>
+                if self.check_handshaked() { self.on_data(conn_id, data) },
+
+            // Process unknown packets
             _ => self.on_unknown()
         }
     }
 
-    fn on_unknown(&self) {
+    fn check_handshaked(&self) -> bool {
         let state = self.state.borrow();
         if !state.handshaked {
-            // Unknown packet received while not handshaked yet.
-            // This is normally due to wrong credentials.
-            // Close the connection.
-            do_log!(self.logger, WARNING, "Authentication failure. Client: {}", state.client.unwrap());
+            // Treat as authentication failure if we receive anything
+            // before handshake.
+            do_log!(self.logger, WARNING, "Authentication / Protocol failure. Client: {}", state.client.unwrap());
             self.writer.feed(OwnedMessage::Close(None));
         }
+        state.handshaked
+    }
+
+    fn on_unknown(&self) {
+        // If we have not handshaked and received unknown packet
+        // then close the connection.
+        self.check_handshaked();
+
+        // TODO: Support adding garbage to obfuscate.
     }
 
     fn on_handshake(&self, addr: SocketAddr) {
