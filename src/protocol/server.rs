@@ -7,7 +7,7 @@ use futures::{Stream};
 use futures::future::{Future, IntoFuture};
 use futures::stream::{SplitSink};
 use protocol::protocol as proto;
-use protocol::util::{self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent};
+use protocol::util::{self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent, SharedWriter};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -84,14 +84,14 @@ struct ServerSession {
     option: TwsServerOption,
     logger: util::Logger,
     handle: Handle,
-    writer: util::BufferedWriter<ClientSink>,
+    writer: SharedWriter<ClientSink>,
     heartbeat_agent: HeartbeatAgent<ClientSink>,
     state: Rc<RefCell<ServerSessionState>>
 }
 
 impl ServerSession {
     fn new(option: TwsServerOption, logger: util::Logger, handle: Handle) -> ServerSession {
-        let writer = util::BufferedWriter::new();
+        let writer = SharedWriter::new();
         ServerSession {
             heartbeat_agent: HeartbeatAgent::new(option.timeout, writer.clone()),
             option,
@@ -241,7 +241,7 @@ impl ServerSession {
     }
 
     // Clean-up job after a connection is closed.
-    fn close_conn(state: &mut ServerSessionState, writer: &util::BufferedWriter<ClientSink>, conn_id: &str) {
+    fn close_conn(state: &mut ServerSessionState, writer: &SharedWriter<ClientSink>, conn_id: &str) {
         let ref mut conns = state.remote_connections;
         if conns.contains_key(conn_id) {
             conns.remove(conn_id);
@@ -267,7 +267,7 @@ enum RemoteConnectionValues {
 struct RemoteConnection {
     conn_id: String,
     logger: util::Logger,
-    remote_writer: util::BufferedWriter<RemoteSink>,
+    remote_writer: SharedWriter<RemoteSink>,
     event_emitter: RcEventEmitter<RemoteConnectionEvents, RemoteConnectionValues>
 }
 
@@ -290,8 +290,8 @@ impl RemoteConnection {
                 // Convert the client into two halves
                 let (sink, stream) = s.framed(BytesCodec::new()).split();
 
-                // BufferedWriter for sending to remote
-                let remote_writer = util::BufferedWriter::new();
+                // SharedWriter for sending to remote
+                let remote_writer = SharedWriter::new();
 
                 // Forward remote packets to client
                 let stream_work = stream.for_each(clone!(emitter, logger, conn_id_owned; |p| {
@@ -337,7 +337,7 @@ impl RemoteConnection {
     }
 
     /*
-     * Send a data buffer to remote via the BufferedWriter
+     * Send a data buffer to remote via the SharedWriter
      * created while connecting
      */
     fn send(&self, data: &[u8]) {

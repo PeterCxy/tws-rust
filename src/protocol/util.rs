@@ -182,9 +182,9 @@ macro_rules! empty_future {
 }
 
 /*
- * Shared state between BufferedWriter and BufferedStream
+ * Shared state between SharedWriter and SharedStream
  */
-struct BufferedStreamState<I, E> {
+struct SharedStreamState<I, E> {
     marker: PhantomData<E>, // Placeholder
     queue: Vec<I>, // Items to be written
     finished: bool, // Whether this stream should finish on next poll()
@@ -202,19 +202,19 @@ struct BufferedStreamState<I, E> {
  * This stream is not thread-safe. Only to be used
  * in single-threaded asynchronous code.
  */
-struct BufferedStream<I: Debug, E> {
-    state: Rc<RefCell<BufferedStreamState<I, E>>>
+struct SharedStream<I: Debug, E> {
+    state: Rc<RefCell<SharedStreamState<I, E>>>
 }
 
-impl<I: Debug, E> BufferedStream<I, E> {
-    fn new(state: Rc<RefCell<BufferedStreamState<I, E>>>) -> BufferedStream<I, E> {
-        BufferedStream {
+impl<I: Debug, E> SharedStream<I, E> {
+    fn new(state: Rc<RefCell<SharedStreamState<I, E>>>) -> SharedStream<I, E> {
+        SharedStream {
             state
         }
     }
 }
 
-impl<I: Debug, E> Stream for BufferedStream<I, E> {
+impl<I: Debug, E> Stream for SharedStream<I, E> {
     type Item = I;
     type Error = E;
 
@@ -244,9 +244,9 @@ impl<I: Debug, E> Stream for BufferedStream<I, E> {
 }
 
 /*
- * A writer that writes to a Sink
+ * A sharable writer that writes to a Sink
  * but does not flush() or wait for finishing
- * using BufferedStream.
+ * using SharedStream.
  * 
  * This is a workaround because Sink::send()
  * will consume ownership and will do flush()
@@ -255,14 +255,14 @@ impl<I: Debug, E> Stream for BufferedStream<I, E> {
  * The writer is cheaply clonable, allowing to
  * be shared between multiple owners.
  */
-pub struct BufferedWriter<S: 'static + Sink> where S::SinkItem: Debug {
-    state: Rc<RefCell<BufferedStreamState<S::SinkItem, S::SinkError>>>
+pub struct SharedWriter<S: 'static + Sink> where S::SinkItem: Debug {
+    state: Rc<RefCell<SharedStreamState<S::SinkItem, S::SinkError>>>
 }
 
-impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
-    pub fn new() -> BufferedWriter<S> {
-        BufferedWriter {
-            state: Rc::new(RefCell::new(BufferedStreamState {
+impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
+    pub fn new() -> SharedWriter<S> {
+        SharedWriter {
+            state: Rc::new(RefCell::new(SharedStreamState {
                 marker: PhantomData,
                 queue: Vec::new(),
                 finished: false,
@@ -282,7 +282,7 @@ impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
      */
     pub fn run(&self, sink: S) -> Box<Future<Item=(), Error=S::SinkError>> {
         let state = self.state.clone();
-        let stream = BufferedStream::new(state);
+        let stream = SharedStream::new(state);
         Box::new(stream.forward(sink)
             .map(|_| ()))
     }
@@ -324,17 +324,17 @@ impl<S: 'static + Sink> BufferedWriter<S> where S::SinkItem: Debug {
 }
 
 /*
- * Destructor implementation of BufferedWriter
- * This should be customized because BufferedWriter
+ * Destructor implementation of SharedWriter
+ * This should be customized because SharedWriter
  * itself is clonable.
  */
-impl<S: 'static + Sink> Drop for BufferedWriter<S> where S::SinkItem: Debug {
+impl<S: 'static + Sink> Drop for SharedWriter<S> where S::SinkItem: Debug {
     fn drop(&mut self) {
         // The state is shared between at least
-        // one BufferedStream and one BufferedWriter
+        // one SharedStream and one SharedWriter
         // Therefore, when the reference count is
         // less than 2, we can be sure that this
-        // will be the last BufferedWriter alive,
+        // will be the last SharedWriter alive,
         // and thus we can safely release the resource.
         if Rc::strong_count(&self.state) <= 2 {
             self.close();
@@ -343,12 +343,12 @@ impl<S: 'static + Sink> Drop for BufferedWriter<S> where S::SinkItem: Debug {
 }
 
 /*
- * BufferedWriter is clonable by just cloning the state
+ * SharedWriter is clonable by just cloning the state
  * allowing multiple ownership without two levels of `Rc`s
  */
-impl<S: 'static + Sink> Clone for BufferedWriter<S> where S::SinkItem: Debug {
-    fn clone(&self) -> BufferedWriter<S> {
-        BufferedWriter {
+impl<S: 'static + Sink> Clone for SharedWriter<S> where S::SinkItem: Debug {
+    fn clone(&self) -> SharedWriter<S> {
+        SharedWriter {
             state: self.state.clone()
         }
     }
@@ -407,18 +407,18 @@ pub trait EventSource<T, U> where T: Eq {
 
 /*
  * Shared heartbeat logic for WebSocket sessions.
- * Takes the BufferedWriter for the session,
+ * Takes the SharedWriter for the session,
  * runs a Futures loop that can be joint to the main
  * work using `select` combinator.
  */
 pub struct HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
     timeout: u64, // Milliseconds
-    writer: BufferedWriter<S>,
+    writer: SharedWriter<S>,
     heartbeat_received: Rc<Cell<bool>>
 }
 
 impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
-    pub fn new(timeout: u64, writer: BufferedWriter<S>) -> HeartbeatAgent<S> {
+    pub fn new(timeout: u64, writer: SharedWriter<S>) -> HeartbeatAgent<S> {
         HeartbeatAgent {
             timeout,
             writer,
