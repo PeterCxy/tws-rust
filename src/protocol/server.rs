@@ -6,9 +6,9 @@
  */
 use bytes::{Bytes, BytesMut};
 use errors::Result;
-use futures::{Stream};
+use futures::Stream;
 use futures::future::{Future, IntoFuture};
-use futures::stream::{SplitSink};
+use futures::stream::SplitSink;
 use protocol::protocol as proto;
 use protocol::util::{self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent, SharedWriter};
 use std::cell::RefCell;
@@ -19,9 +19,9 @@ use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
 use tokio_io::AsyncRead;
 use tokio_io::codec::BytesCodec;
+use tokio_io::codec::Framed;
 use websocket::OwnedMessage;
 use websocket::async::{Server, Client, MessageCodec};
-use websocket::client::async::Framed;
 
 #[derive(Clone)]
 pub struct TwsServerOption {
