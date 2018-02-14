@@ -10,6 +10,7 @@ use futures::Stream;
 use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
+use protocol::shared::TwsService;
 use protocol::util::{self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent, SharedWriter};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -219,7 +220,7 @@ impl ServerSession {
             ._box()
     }
 
-    fn on_message(&self, msg: OwnedMessage) {
+    /*fn on_message(&self, msg: OwnedMessage) {
         match msg {
             // Control / Data packets can be in either Text or Binary form.
             OwnedMessage::Text(text) => self.on_packet(proto::parse_packet(&self.option.passwd, text.as_bytes())),
@@ -250,7 +251,7 @@ impl ServerSession {
             // Process unknown packets
             _ => self.on_unknown()
         }
-    }
+    }*/
 
     fn check_handshaked(&self) -> bool {
         let state = self.state.borrow();
@@ -261,6 +262,35 @@ impl ServerSession {
             self.writer.feed(OwnedMessage::Close(None));
         }
         state.handshaked
+    }
+
+    // Clean-up job after a logical connection is closed.
+    fn close_conn(state: &mut ServerSessionState, writer: &SharedWriter<ClientSink>, conn_id: &str) {
+        let ref mut conns = state.remote_connections;
+        if conns.contains_key(conn_id) {
+            conns.remove(conn_id);
+
+            // Notify the client that this logical connection has been closed.
+            writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
+        }
+    }
+}
+
+impl TwsService<ClientSink> for ServerSession {
+    fn get_passwd(&self) -> &str {
+        &self.option.passwd
+    }
+
+    fn get_writer(&self) -> &SharedWriter<ClientSink> {
+        &self.writer
+    }
+
+    fn get_heartbeat_agent(&self) -> &HeartbeatAgent<ClientSink> {
+        &self.heartbeat_agent
+    }
+
+    fn get_logger(&self) -> &util::Logger {
+        &self.logger
     }
 
     fn on_unknown(&self) {
@@ -289,6 +319,8 @@ impl ServerSession {
      * Open a new logical connection inside this channel.
      */
     fn on_connect(&self, conn_id: &str) {
+        if !self.check_handshaked() { return; }
+
         clone!(self, state, writer, logger);
         let conn_id_owned = String::from(conn_id);
         let conn_work = RemoteConnection::connect(conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
@@ -332,6 +364,8 @@ impl ServerSession {
     }
 
     fn on_connect_state(&self, conn_id: &str, ok: bool) {
+        if !self.check_handshaked() { return; }
+
         if !ok {
             // Call shared clean-up code to clean up the logical connection.
             Self::close_conn(&mut self.state.borrow_mut(), &self.writer, conn_id);
@@ -340,21 +374,12 @@ impl ServerSession {
     }
 
     fn on_data(&self, conn_id: &str, data: &[u8]) {
+        if !self.check_handshaked() { return; }
+        
         let ref conns = self.state.borrow().remote_connections;
         if let Some(conn) = conns.get(conn_id) {
             // If the designated connection exists, just forward the data.
             conn.send(data);
-        }
-    }
-
-    // Clean-up job after a logical connection is closed.
-    fn close_conn(state: &mut ServerSessionState, writer: &SharedWriter<ClientSink>, conn_id: &str) {
-        let ref mut conns = state.remote_connections;
-        if conns.contains_key(conn_id) {
-            conns.remove(conn_id);
-
-            // Notify the client that this logical connection has been closed.
-            writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
         }
     }
 }

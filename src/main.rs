@@ -23,6 +23,7 @@ mod errors {
             ParseIntError(::std::num::ParseIntError);
             Utf8Error(::std::str::Utf8Error);
             WebSocketError(::websocket::WebSocketError);
+            ParseError(::websocket::client::builder::ParseError);
         }
     }
 }

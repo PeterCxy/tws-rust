@@ -7,4 +7,6 @@
 #[macro_use]
 pub mod util;
 pub mod protocol;
+mod shared;
 pub mod server;
+pub mod client;
