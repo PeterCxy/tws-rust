@@ -1,15 +1,21 @@
 /*
  * Shared implementation details between server and client
  */
+use bytes::{Bytes, BytesMut};
 use errors::*;
 use futures::{Future, Stream};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter};
+use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource};
 use websocket::OwnedMessage;
 use websocket::async::Client;
 use websocket::stream::async::Stream as WsStream;
 use std::net::SocketAddr;
+use tokio_io::AsyncRead;
+use tokio_io::codec::BytesCodec;
+use tokio_io::codec::Framed;
+use tokio_core::net::TcpStream;
+use tokio_core::reactor::Handle;
 
 /*
  * Shared logic abstracted from both the server and the client
@@ -124,4 +130,93 @@ pub trait TwsService<S: 'static + WsStream>: 'static + Sized {
     fn on_connect(&self, _conn_id: &str) {}
     fn on_connect_state(&self, _conn_id: &str, _ok: bool) {}
     fn on_data(&self, _conn_id: &str, _data: &[u8]) {}
+}
+
+/*
+ * Events and values that may be emitted by a TCP connection
+ */
+#[derive(PartialEq, Eq)]
+pub enum ConnectionEvents {
+    Data,
+    Close
+}
+
+#[derive(Debug)]
+pub enum ConnectionValues {
+    Nothing,
+    Packet(BytesMut)
+}
+
+// Splitted Sink for Tcp byte streams
+pub type TcpSink = SplitSink<Framed<TcpStream, BytesCodec>>;
+
+/*
+ * Shared logic for TCP connection
+ *  1. from server to remote
+ *  2. from client to local (which is TWS client)
+ */
+pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues> {
+    /*
+     * Static method to bootstrap the connection
+     * set up the event emitter and writer
+     */
+    fn create(
+        conn_id: String, handle: Handle, logger: util::Logger, client: TcpStream
+    ) -> (RcEventEmitter<ConnectionEvents, ConnectionValues>, SharedWriter<TcpSink>) {
+
+        let emitter = util::new_emitter();
+        let (sink, stream) = client.framed(BytesCodec::new()).split();
+        // SharedWriter for sending to remote
+        let remote_writer = SharedWriter::new();
+
+        // Forward remote packets to client
+        let stream_work = stream.for_each(clone!(emitter, logger, conn_id; |p| {
+            do_log!(logger, INFO, "[{}] received {} bytes from remote", conn_id, p.len());
+            emitter.borrow().emit(ConnectionEvents::Data, ConnectionValues::Packet(p));
+            Ok(())
+        })).map_err(clone!(logger, conn_id; |e| {
+            do_log!(logger, ERROR, "[{}] Remote => Client side error {:?}", conn_id, e);
+        })).map(|_| ());
+
+        // Forward client packets to remote
+        // Client packets should be sent through `send` method.
+        let sink_work = remote_writer.run(sink)
+            .map_err(clone!(logger, conn_id; |e| {
+                do_log!(logger, ERROR, "[{}] Client => Remote side error {:?}", conn_id, e);
+            }));
+
+        // Schedule the two jobs on the event loop
+        // Use `select` to wait one of the jobs to finish.
+        // This is often the `sink_work` if no error on remote side
+        // has happened.
+        // Once one of them is finished, just tear down the whole
+        // channel.
+        handle.spawn(stream_work.select(sink_work)
+            .then(clone!(emitter, logger, conn_id; |_| {
+                // Clean-up job upon finishing
+                // No matter if there is any error.
+                do_log!(logger, INFO, "[{}] Channel closing.", conn_id);
+                emitter.borrow().emit(ConnectionEvents::Close, ConnectionValues::Nothing);
+                Ok(())
+            })));
+
+        (emitter, remote_writer)
+    }
+
+    fn get_writer(&self) -> &SharedWriter<TcpSink>;
+    fn get_conn_id(&self) -> &str;
+    fn get_logger(&self) -> &util::Logger;
+
+    /*
+     * Send a data buffer to remote via the SharedWriter
+     * created while connecting
+     */
+    fn send(&self, data: &[u8]) {
+        do_log!(self.get_logger(), INFO, "[{}] sending {} bytes to remote", self.get_conn_id(), data.len());
+        self.get_writer().feed(Bytes::from(data));
+    }
+
+    fn close(&self) {
+        self.get_writer().close();
+    }
 }

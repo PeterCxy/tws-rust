@@ -200,13 +200,7 @@ fn _handshake_parse(passwd: &str, time: i64, packet: &[u8]) -> Result<SocketAddr
  * TODO: Should we make authentication for this
  *  kind of packets more strict? i.e. include time
  */
-fn connect_build(passwd: &str) -> Result<(String, String)> {
-    let conn_id = util::rand_str(6);
-    _connect_build(passwd, &conn_id)
-        .map(|packet| (conn_id, packet))
-}
-
-fn _connect_build(passwd: &str, conn_id: &str) -> Result<String> {
+fn connect_build(passwd: &str, conn_id: &str) -> Result<String> {
     build_authenticated_packet(
         passwd,
         &format!("NEW CONNECTION {}", conn_id)
@@ -345,7 +339,7 @@ mod tests {
     fn connect_build_1() {
         assert_eq!(
             "AUTH +cdQQVGtyqj7KxTS5mPEwvpRGhRuctCM3pa9GsTYGZA=\nNEW CONNECTION XnjEa2",
-            _connect_build("eeovgrg", "XnjEa2").unwrap()
+            connect_build("eeovgrg", "XnjEa2").unwrap()
         );
     }
 
