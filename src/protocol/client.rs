@@ -7,7 +7,8 @@
 use errors::*;
 use futures::future::{Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
-use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, SharedWriter};
+use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter};
+use protocol::shared::TwsService;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -75,24 +76,27 @@ struct ClientSessionState {
     connections: HashMap<String, ClientConnection>,
 }
 
-#[derive(Clone)]
+// TODO: Need a handle class to manipulate state from outside the session
 struct ClientSession {
     id: usize,
     option: TwsClientOption,
     handle: Handle,
     logger: util::Logger,
     writer: SharedWriter<ServerSink>,
+    heartbeat_agent: HeartbeatAgent<ServerSink>,
     state: Rc<RefCell<ClientSessionState>>
 }
 
 impl ClientSession {
     fn new(id: usize, handle: Handle, logger: util::Logger, option: TwsClientOption) -> ClientSession {
+        let writer = SharedWriter::new();
         ClientSession {
+            heartbeat_agent: HeartbeatAgent::new(option.timeout, writer.clone()),
             id,
             option,
             handle,
             logger,
-            writer: SharedWriter::new(),
+            writer,
             state: Rc::new(RefCell::new(ClientSessionState {
                 connected: false,
                 connections: HashMap::new(),
@@ -114,38 +118,33 @@ impl ClientSession {
                     .chain_err(|| "Connect failure")
             })
             .and_then(move |(client, _headers)| {
-                self.on_connect(client)
+                clone!(self, state);
+                self.run_service(client)
+                    .then(move |_| {
+                        // TODO: Cleanup job
+                        state.borrow_mut().connections.clear();
+                        Ok(())
+                    })
             })
             ._box() // When this future finish, everything should end here.
     }
+}
 
-    fn on_connect<'a>(self, client: ServerConn) -> BoxFuture<'a, ()> {
-        clone!(self, logger);
-        let (sink, stream) = client.split();
-        let sink_write = self.writer.run(sink).map_err(clone!(logger; |e| {
-            do_log!(logger, ERROR, "{:?}", e);
-        }));
-        // TODO: Heartbeat
-        // TODO: Extract shared code with the server
-        stream
-            .map_err(clone!(logger; |e| {
-                do_log!(logger, ERROR, "{:?}", e);
-                "session failed.".into()
-            }))
-            .for_each(move |msg| {
-                self.on_message(msg);
-                Ok(()) as Result<()>
-            })
-            .select2(sink_write)
-            .then(clone!(logger; |_| {
-                do_log!(logger, INFO, "Session finished.");
-                Ok(())
-            }))
-            ._box()
+impl TwsService<Box<WsStream + Send>> for ClientSession {
+    fn get_passwd(&self) -> &str {
+        &self.option.passwd
     }
 
-    fn on_message(&self, msg: OwnedMessage) {
+    fn get_logger(&self) -> &util::Logger {
+        &self.logger
+    }
 
+    fn get_writer(&self) -> &SharedWriter<ServerSink> {
+        &self.writer
+    }
+
+    fn get_heartbeat_agent(&self) -> &HeartbeatAgent<ServerSink> {
+        &self.heartbeat_agent
     }
 }
 

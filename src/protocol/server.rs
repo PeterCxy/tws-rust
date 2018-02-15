@@ -5,7 +5,6 @@
  * of the protocol.
  */
 use bytes::{Bytes, BytesMut};
-use errors::Result;
 use futures::Stream;
 use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
@@ -166,50 +165,8 @@ impl ServerSession {
         // Now we have the client address
         state.borrow_mut().client = Some(addr);
 
-        // Split the client into outgoing and incoming sides.
-        let (sink, stream) = client.split();
-
-        // Obtain a future representing the writing tasks.
-        let sink_write = self.writer.run(sink).map_err(clone!(logger; |e| {
-            do_log!(logger, ERROR, "{:?}", e);
-        }));
-
-        // Obtain a future to do heartbeats.
-        let heartbeat_work = self.heartbeat_agent.run().map_err(clone!(logger; |_| {
-            do_log!(logger, ERROR, "Session timed out.");
-        }));
-        
-        // The main task
-        // which also joins the above two sub-tasks by `select2`
-        // The resulting task will execute each of these tasks
-        // and finish once any of the tasks finishes.
-        // i.e. Once the WebSocket connection closes, everything here
-        //      also stops.
-        // If `join` is used instead, then the task here
-        // will execute forever, which is not proper behavior
-        // for a session.
-        stream
-            .map_err(clone!(logger; |e| {
-                do_log!(logger, ERROR, "{:?}", e);
-                "session failed.".into()
-            }))
-            .for_each(move |msg| {
-                // Process each message from the client
-                // Note that this does not return a future.
-                // Anything that happens for processing
-                // the message and requires doing things
-                // on the event loop should spawn a task
-                // instead of returning it.
-                // In order not to block the main WebSocket
-                // stream.
-                self.on_message(msg);
-                Ok(()) as Result<()>
-            })
-            .select2(sink_write) // Execute task for the writer
-            .select2(heartbeat_work) // Execute task for heartbeats
-            .then(clone!(state, logger; |_| {
-                do_log!(logger, INFO, "Session finished.");
-
+        self.run_service(client)
+            .then(clone!(state; |_| {
                 // Clean-up job
                 // Drop all the connections
                 // will be closed by the implementation of Drop
@@ -219,39 +176,6 @@ impl ServerSession {
             }))
             ._box()
     }
-
-    /*fn on_message(&self, msg: OwnedMessage) {
-        match msg {
-            // Control / Data packets can be in either Text or Binary form.
-            OwnedMessage::Text(text) => self.on_packet(proto::parse_packet(&self.option.passwd, text.as_bytes())),
-            OwnedMessage::Binary(bytes) => self.on_packet(proto::parse_packet(&self.option.passwd, &bytes)),
-
-            // Send pong back to keep connection alive
-            OwnedMessage::Ping(msg) => self.writer.feed(OwnedMessage::Pong(msg)),
-
-            // Notify the heartbeat agent that a pong is received.
-            OwnedMessage::Pong(_) => self.heartbeat_agent.set_heartbeat_received(),
-            _ => ()
-        };
-    }
-
-    fn on_packet(&self, packet: proto::Packet) {
-        do_log!(self.logger, DEBUG, "{:?}", packet);
-        match packet {
-            proto::Packet::Handshake(addr) => self.on_handshake(addr),
-
-            // Everything here have to happen after handshake.
-            proto::Packet::Connect(conn_id) =>
-                if self.check_handshaked() { self.on_connect(conn_id) },
-            proto::Packet::ConnectionState((conn_id, ok)) =>
-                if self.check_handshaked() { self.on_connect_state(conn_id, ok) },
-            proto::Packet::Data((conn_id, data)) =>
-                if self.check_handshaked() { self.on_data(conn_id, data) },
-
-            // Process unknown packets
-            _ => self.on_unknown()
-        }
-    }*/
 
     fn check_handshaked(&self) -> bool {
         let state = self.state.borrow();
@@ -276,7 +200,7 @@ impl ServerSession {
     }
 }
 
-impl TwsService<ClientSink> for ServerSession {
+impl TwsService<TcpStream> for ServerSession {
     fn get_passwd(&self) -> &str {
         &self.option.passwd
     }
