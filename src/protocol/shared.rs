@@ -108,7 +108,7 @@ pub trait TwsService<S: 'static + WsStream>: 'static + Sized {
      * Process TWS protocol packets
      */
     fn on_packet(&self, packet: proto::Packet) {
-        do_log!(self.get_logger(), DEBUG, "{:?}", packet);
+        //do_log!(self.get_logger(), DEBUG, "{:?}", packet);
         match packet {
             // Call corresponding event methods.
             // Implementations can override these to control event handling.
