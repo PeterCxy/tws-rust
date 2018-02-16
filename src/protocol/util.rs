@@ -21,6 +21,7 @@ use websocket::OwnedMessage;
  * of this module
  */
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum LogLevel {
     ERROR,
     WARNING,
