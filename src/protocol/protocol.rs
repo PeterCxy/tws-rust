@@ -92,7 +92,7 @@ fn build_authenticated_packet(passwd: &str, msg: &str) -> Result<String> {
  *      and split the packet into lines.
  */
 fn parse_authenticated_packet<'a>(passwd: &str, packet: &'a [u8]) -> Result<Vec<&'a str>> {
-    if packet[0..4] != "AUTH".as_bytes()[0..4] {
+    if packet.len() < 4 || packet[0..4] != "AUTH".as_bytes()[0..4] {
         return Err("Not a proper authenticated packet.".into());
     }
 
@@ -200,14 +200,14 @@ fn _handshake_parse(passwd: &str, time: i64, packet: &[u8]) -> Result<SocketAddr
  * TODO: Should we make authentication for this
  *  kind of packets more strict? i.e. include time
  */
-fn connect_build(passwd: &str, conn_id: &str) -> Result<String> {
+pub fn connect_build(passwd: &str, conn_id: &str) -> Result<String> {
     build_authenticated_packet(
         passwd,
         &format!("NEW CONNECTION {}", conn_id)
     )
 }
 
-fn connect_parse<'a>(passwd: &str, packet: &'a [u8]) -> Result<&'a str> {
+pub fn connect_parse<'a>(passwd: &str, packet: &'a [u8]) -> Result<&'a str> {
     parse_authenticated_packet(passwd, packet)
         .and_then(|lines| {
             if lines.len() < 1 {
@@ -236,7 +236,7 @@ pub fn connect_state_build(conn_id: &str, ok: bool) -> String {
 }
 
 pub fn connect_state_parse<'a>(packet: &'a [u8]) -> Result<(&'a str, bool)> {
-    if packet[0..10] != "CONNECTION".as_bytes()[0..10] {
+    if packet.len() < 10 || packet[0..10] != "CONNECTION".as_bytes()[0..10] {
         return Err("Not a Connect State packet".into());
     }
 
@@ -274,7 +274,7 @@ pub fn data_build(conn_id: &str, data: &[u8]) -> Vec<u8> {
 }
 
 pub fn data_parse<'a>(packet: &'a [u8]) -> Result<(&'a str, &'a [u8])> {
-    if packet[0] != "P".as_bytes()[0] || packet.len() < 8 {
+    if packet.len() < 8 || packet[0] != "P".as_bytes()[0] {
         Err("Not a Data packet".into())
     } else {
         str::from_utf8(&packet[1..7])

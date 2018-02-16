@@ -132,8 +132,8 @@ const DICTIONARY: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 pub fn rand_str(len: usize) -> String {
     let mut rng = rand::thread_rng();
     let mut ret: Vec<u8> = Vec::with_capacity(len);
-    for i in 0..len {
-        ret[i] = DICTIONARY[rng.gen_range(0, DICTIONARY.len())];
+    for _ in 0..len {
+        ret.push(DICTIONARY[rng.gen_range(0, DICTIONARY.len())]);
     }
     str::from_utf8(ret.as_slice()).unwrap().to_string()
 }
@@ -174,12 +174,6 @@ pub trait Boxable: Sized {
 
 impl<'a, F> Boxable for F
     where F: Future + 'a {}
-
-macro_rules! empty_future {
-    () => {
-        Ok(()).into_future()._box()
-    }
-}
 
 /*
  * Shared state between SharedWriter and SharedStream
@@ -305,6 +299,7 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
         let mut state = self.state.borrow_mut();
         if !state.finished {
             state.finished = true;
+            // TODO: Clear buffer after closing.
             Self::notify_task(&state.task);
         }
     }

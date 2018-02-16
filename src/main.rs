@@ -29,12 +29,14 @@ mod errors {
 }
 
 use protocol::server::{TwsServerOption, TwsServer};
+use protocol::client::{TwsClientOption, TwsClient};
 use std::env;
 use tokio_core::reactor::Core;
 
 fn main() {
     match &env::args().nth(1).expect("Argument needed")[..] {
         "server" => test_server(),
+        "client" => test_client(),
         _ => println!("Unkown argument")
     }
 }
@@ -52,4 +54,22 @@ fn test_server() {
         println!("{:?}: {:?}", l, m);
     });
     core.run(server.run()).unwrap();
+}
+
+// TEMPORARY TEST CODE FOR CLIENT
+fn test_client() {
+    let mut core = Core::new().unwrap();
+    let mut client = TwsClient::new(core.handle(), TwsClientOption {
+        connections: 2,
+        listen: "127.0.0.1:23360".parse().unwrap(),
+        remote: "127.0.0.1:80".parse().unwrap(),
+        server: String::from("ws://127.0.0.1:23356/"),
+        passwd: String::from("testpassword"),
+        timeout: 1000
+    });
+    client.on_log(|l, m| {
+        // TODO: Extract common logging logic.
+        println!("{:?}: {:?}", l, m);
+    });
+    core.run(client.run()).unwrap();
 }

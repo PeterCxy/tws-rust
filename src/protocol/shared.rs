@@ -156,6 +156,10 @@ pub type TcpSink = SplitSink<Framed<TcpStream, BytesCodec>>;
  *  2. from client to local (which is TWS client)
  */
 pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues> {
+    fn get_endpoint_descriptors() -> (&'static str, &'static str) {
+        ("remote", "client")
+    }
+    
     /*
      * Static method to bootstrap the connection
      * set up the event emitter and writer
@@ -163,6 +167,7 @@ pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues>
     fn create(
         conn_id: String, handle: Handle, logger: util::Logger, client: TcpStream
     ) -> (RcEventEmitter<ConnectionEvents, ConnectionValues>, SharedWriter<TcpSink>) {
+        let (a, b) = Self::get_endpoint_descriptors();
 
         let emitter = util::new_emitter();
         let (sink, stream) = client.framed(BytesCodec::new()).split();
@@ -170,19 +175,19 @@ pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues>
         let remote_writer = SharedWriter::new();
 
         // Forward remote packets to client
-        let stream_work = stream.for_each(clone!(emitter, logger, conn_id; |p| {
-            do_log!(logger, INFO, "[{}] received {} bytes from remote", conn_id, p.len());
+        let stream_work = stream.for_each(clone!(a, emitter, logger, conn_id; |p| {
+            do_log!(logger, INFO, "[{}] received {} bytes from {}", conn_id, p.len(), a);
             emitter.borrow().emit(ConnectionEvents::Data, ConnectionValues::Packet(p));
             Ok(())
-        })).map_err(clone!(logger, conn_id; |e| {
-            do_log!(logger, ERROR, "[{}] Remote => Client side error {:?}", conn_id, e);
+        })).map_err(clone!(a, b, logger, conn_id; |e| {
+            do_log!(logger, ERROR, "[{}] {} => {} error {:?}", conn_id, a, b, e);
         })).map(|_| ());
 
         // Forward client packets to remote
         // Client packets should be sent through `send` method.
         let sink_work = remote_writer.run(sink)
-            .map_err(clone!(logger, conn_id; |e| {
-                do_log!(logger, ERROR, "[{}] Client => Remote side error {:?}", conn_id, e);
+            .map_err(clone!(a, b, logger, conn_id; |e| {
+                do_log!(logger, ERROR, "[{}] {} => {} error {:?}", conn_id, b, a, e);
             }));
 
         // Schedule the two jobs on the event loop
@@ -212,7 +217,8 @@ pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues>
      * created while connecting
      */
     fn send(&self, data: &[u8]) {
-        do_log!(self.get_logger(), INFO, "[{}] sending {} bytes to remote", self.get_conn_id(), data.len());
+        // TODO: Do not feed if not connected
+        do_log!(self.get_logger(), INFO, "[{}] sending {} bytes to {}", self.get_conn_id(), data.len(), Self::get_endpoint_descriptors().0);
         self.get_writer().feed(Bytes::from(data));
     }
 

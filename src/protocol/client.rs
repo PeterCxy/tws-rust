@@ -4,10 +4,9 @@
  * Refer to `protocol.rs` for detailed description
  * of the protocol.
  */
-use bytes::Bytes;
-use errors::*;
 use futures::future::{Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
+use protocol::protocol as proto;
 use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource};
 use protocol::shared::{TwsService, TwsConnection, TcpSink, ConnectionEvents, ConnectionValues};
 use rand::{self, Rng};
@@ -17,22 +16,24 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::Handle;
-use tokio_io::AsyncRead;
-use tokio_io::codec::BytesCodec;
 use tokio_io::codec::Framed;
 use websocket::{ClientBuilder, OwnedMessage};
-use websocket::async::{Client, MessageCodec};
+use websocket::async::MessageCodec;
 use websocket::stream::async::Stream as WsStream;
 
 #[derive(Clone)]
 pub struct TwsClientOption {
     pub connections: usize,
     pub listen: SocketAddr,
+    pub remote: SocketAddr,
     pub server: String,
     pub passwd: String,
     pub timeout: u64
 }
 
+/*
+ * Client object for TWS protocol
+ */
 pub struct TwsClient {
     option: TwsClientOption,
     handle: Handle,
@@ -56,7 +57,7 @@ impl TwsClient {
     }
 
     pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
-        clone!(self, sessions);
+        clone!(self, sessions, handle, logger);
         self.maintain_sessions();
         TcpListener::bind(&self.option.listen, &self.handle)
             .into_future()
@@ -66,11 +67,16 @@ impl TwsClient {
                     .map_err(|_| "Failed to listen for connections".into())
             })
             .flatten_stream()
-            .for_each(move |(client, addr)| {
-                // TODO: Randomly choose a working session
+            .for_each(move |(client, _addr)| {
+                // Randomly choose a session to assign the new connection to.
                 let session_id = Self::choose_session(&sessions);
                 if let Some(id) = session_id {
-
+                    if let Some(ref conn) = sessions.borrow()[id] {
+                        let conn_id = conn.add_pending_connection(client, handle.clone());
+                        do_log!(logger, INFO, "[{}] new connection assigned to session {}", conn_id, id);
+                    }
+                } else {
+                    do_log!(logger, WARNING, "Failed to assign an active session to the new connection");
                 }
                 Ok(())
             })
@@ -120,6 +126,7 @@ impl TwsClient {
 
     /*
      * Choose a random working session from all the available sessions.
+     * If nothing could be chosen, return None.
      */
     fn choose_session(sessions: &Rc<RefCell<Vec<Option<ClientSessionHandle>>>>) -> Option<usize> {
         let _sessions = sessions.borrow();
@@ -137,26 +144,66 @@ impl TwsClient {
     }
 }
 
+// Type shorthands
 type ServerConn = Framed<Box<WsStream + Send>, MessageCodec<OwnedMessage>>;
 type ServerSink = SplitSink<ServerConn>;
 
 struct ClientSessionState {
     connected: bool,
     connections: HashMap<String, ClientConnection>,
+    pending_connections: HashMap<String, PendingClientConnection>
 }
 
+/*
+ * Handle that can be used to communicate
+ * to a ClientSession.
+ * Used to add new pending connections.
+ */
+#[allow(dead_code)]
 struct ClientSessionHandle {
     id: usize,
+    option: TwsClientOption,
+    logger: util::Logger,
     writer: SharedWriter<ServerSink>,
     state: Rc<RefCell<ClientSessionState>>
 }
 
 impl ClientSessionHandle {
+    /*
+     * Return true if the associated ClientSession is active.
+     */
     fn is_connected(&self) -> bool {
         self.state.borrow().connected
     }
+
+    /*
+     * Add a pending connection to the session.
+     * The connection will be active once the server finishes
+     * connecting to remote.
+     */
+    fn add_pending_connection(&self, client: TcpStream, handle: Handle) -> String {
+        let conn_id = util::rand_str(6);
+        self.state.borrow_mut().pending_connections.insert(conn_id.clone(), PendingClientConnection {
+            conn_id: conn_id.clone(),
+            handle,
+            logger: self.logger.clone(),
+            client
+        });
+
+        // Send CONNECT request to server.
+        // Wait for response.
+        self.writer.feed(OwnedMessage::Text(proto::connect_build(&self.option.passwd, &conn_id).unwrap()));
+        conn_id
+    }
 }
 
+/*
+ * A ClientSession is one WebSocket connection
+ * between the client and the server.
+ * 
+ * Once established, it can forward traffic from
+ * multiple TCP clients, through server to remote.
+ */
 struct ClientSession {
     id: usize,
     option: TwsClientOption,
@@ -180,20 +227,33 @@ impl ClientSession {
             state: Rc::new(RefCell::new(ClientSessionState {
                 connected: false,
                 connections: HashMap::new(),
+                pending_connections: HashMap::new()
             }))
         }
     }
 
+    /*
+     * Get a handle associated with this session
+     * This is necessary because run() takes ownership of self.
+     */
     fn get_handle(&self) -> ClientSessionHandle {
         ClientSessionHandle {
             id: self.id,
+            logger: self.logger.clone(),
+            option: self.option.clone(),
             writer: self.writer.clone(),
             state: self.state.clone()
         }
     }
 
+    /*
+     * Spin up the session
+     * Try to connect and start to accept traffic.
+     */
     fn run<'a>(self) -> BoxFuture<'a, ()> {
         clone!(self, handle);
+
+        // Create the WebSocket client.
         ClientBuilder::new(&self.option.server)
             .into_future()
             .chain_err(|| "Parse failure")
@@ -203,6 +263,12 @@ impl ClientSession {
             })
             .and_then(move |(client, _headers)| {
                 clone!(self, state);
+
+                // Send handshake before anything happens
+                self.writer.feed(OwnedMessage::Text(proto::handshake_build(&self.option.passwd, self.option.remote.clone()).unwrap()));
+
+                // Spin up the service
+                // TODO: Add a periodic job to clear the pending connection list.
                 self.run_service(client)
                     .then(move |_| {
                         // TODO: Cleanup job
@@ -213,6 +279,46 @@ impl ClientSession {
                     })
             })
             ._box() // When this future finish, everything should end here.
+    }
+
+    /*
+     * Call this to activate a pending connection.
+     * NOTE: This method does not check the validity. It is 
+     *      up to the caller to make sure that conn_id is valid.
+     */
+    fn activate_connection(&self, conn_id: &str) {
+        clone!(self, writer, state);
+        let conn = self.state.borrow_mut().pending_connections.remove(conn_id).unwrap().connect();
+        let conn_id = String::from(conn_id);
+
+        // Forward client packet to server
+        conn.subscribe(ConnectionEvents::Data, clone!(conn_id, writer; |data| {
+            unwrap!(&ConnectionValues::Packet(ref data), data, ());
+            writer.feed(OwnedMessage::Binary(proto::data_build(&conn_id, data)));
+        }));
+
+        // Listen to close event
+        conn.subscribe(ConnectionEvents::Close, clone!(conn_id, writer; |_| {
+            ClientSession::close_conn(&mut state.borrow_mut(), &writer, &conn_id);
+        }));
+
+        // Add the connection to active connection list
+        self.state.borrow_mut().connections.insert(String::from(conn.get_conn_id()), conn);
+    }
+
+    /*
+     * Static method to close a connection (either an active one or a pending one)
+     */
+    fn close_conn(state: &mut ClientSessionState, writer: &SharedWriter<ServerSink>, conn_id: &str) {
+        if state.connections.contains_key(conn_id) {
+            state.connections.remove(conn_id);
+
+            // Notify the server about closing this connection
+            // TODO: Notify only when needed.
+            writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
+        } else if state.pending_connections.contains_key(conn_id) {
+            state.pending_connections.remove(conn_id);
+        }
     }
 }
 
@@ -232,8 +338,65 @@ impl TwsService<Box<WsStream + Send>> for ClientSession {
     fn get_heartbeat_agent(&self) -> &HeartbeatAgent<ServerSink> {
         &self.heartbeat_agent
     }
+
+    fn on_unknown(&self) {
+        // TODO: Use a dedicated packet type rather than `unknown`
+        // to signal successful handshake.
+        let mut state = self.state.borrow_mut();
+        if !state.connected {
+            do_log!(self.logger, INFO, "[{}] Session up.", self.id);
+            state.connected = true;
+        }
+    }
+
+    fn on_connect_state(&self, conn_id: &str, ok: bool) {
+        if !ok {
+            Self::close_conn(&mut self.state.borrow_mut(), &self.writer, conn_id);
+        } else {
+            if self.state.borrow().pending_connections.contains_key(conn_id) {
+                // If there is a corresponding pending connection, activate it.
+                self.activate_connection(conn_id);
+            } else {
+                // Else we instruct the server to close the unknown connection
+                self.writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
+            }
+        }
+    }
+
+    fn on_data(&self, conn_id: &str, data: &[u8]) {
+        let state = self.state.borrow();
+        if let Some(conn) = state.connections.get(conn_id) {
+            conn.send(data);
+        }
+    }
 }
 
+/*
+ * A ClientConnection that is still pending
+ * waiting for the server to connect to remote.
+ * 
+ * Temporarily holds information about the future
+ * ClientConnection.
+ */
+struct PendingClientConnection {
+    conn_id: String,
+    handle: Handle,
+    logger: util::Logger,
+    client: TcpStream
+}
+
+impl PendingClientConnection {
+    /*
+     * Upgrade this connection to an actual ClientConnection
+     */
+    fn connect(self) -> ClientConnection {
+        ClientConnection::new(self.conn_id, self.logger, self.handle, self.client)
+    }
+}
+
+/*
+ * Model of a TCP connection from client to local.
+ */
 struct ClientConnection {
     conn_id: String,
     logger: util::Logger,
@@ -242,29 +405,12 @@ struct ClientConnection {
 }
 
 impl ClientConnection {
-    fn new(logger: util::Logger, handle: Handle, client: TcpStream) -> ClientConnection {
-        let conn_id = util::rand_str(6);
+    /*
+     * Create the connection and start to forward traffic.
+     * Do not use this if the connection should be pending.
+     */
+    fn new(conn_id: String, logger: util::Logger, handle: Handle, client: TcpStream) -> ClientConnection {
         let (emitter, writer) = Self::create(conn_id.clone(), handle, logger.clone(), client);
-        /*let emitter = util::new_emitter();
-        let (sink, stream) = client.framed(BytesCodec::new()).split();
-        let writer = SharedWriter::new();
-        let sink_work = writer.run(sink).map_err(clone!(conn_id, logger; |e| {
-            do_log!(logger, ERROR, "[{}] Local => Client error: {:?}", conn_id, e);
-        }));
-        let stream_work = stream.for_each(clone!(conn_id, logger, emitter; |p| {
-            do_log!(logger, INFO, "[{}] Received {} bytes from client", conn_id, p.len());
-            emitter.borrow().emit(ConnectionEvents::Data, ConnectionValues::Packet(p));
-            Ok(())
-        })).map_err(clone!(conn_id, logger; |e| {
-            do_log!(logger, ERROR, "[{}] Client => Local error: {:?}", conn_id, e);
-        }));
-
-        handle.spawn(sink_work.select(stream_work)
-            .then(clone!(conn_id, logger, emitter; |_| {
-                do_log!(logger, INFO, "[{}] Connection finished.", conn_id);
-                emitter.borrow().emit(ConnectionEvents::Close, ConnectionValues::Nothing);
-                Ok(())
-            })));*/
 
         ClientConnection {
             conn_id,
@@ -273,18 +419,13 @@ impl ClientConnection {
             client_writer: writer
         }
     }
-
-    /*fn send(&self, data: &[u8]) {
-        do_log!(self.logger, INFO, "[{}] sending {} bytes to client", self.conn_id, data.len());
-        self.client_writer.feed(Bytes::from(data));
-    }
-
-    fn close(&self) {
-        self.client_writer.close();
-    }*/
 }
 
 impl TwsConnection for ClientConnection {
+    fn get_endpoint_descriptors() -> (&'static str, &'static str) {
+        ("client", "server")
+    }
+
     fn get_logger(&self) -> &util::Logger {
         &self.logger
     }
@@ -306,6 +447,9 @@ impl EventSource<ConnectionEvents, ConnectionValues> for ClientConnection {
 
 impl Drop for ClientConnection {
     fn drop(&mut self) {
+        /*
+         * Close immediatly on drop.
+         */
         self.close();
     }
 }

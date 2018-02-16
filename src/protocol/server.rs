@@ -4,7 +4,6 @@
  * Refer to `protocol.rs` for detailed description
  * of the protocol.
  */
-use bytes::{Bytes, BytesMut};
 use futures::Stream;
 use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
@@ -17,8 +16,6 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
-use tokio_io::AsyncRead;
-use tokio_io::codec::BytesCodec;
 use tokio_io::codec::Framed;
 use websocket::OwnedMessage;
 use websocket::async::{Server, Client, MessageCodec};
@@ -159,7 +156,7 @@ impl ServerSession {
      * loop.
      */
     fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
-        clone!(self, state, logger);
+        clone!(self, state);
 
         // Now we have the client address
         state.borrow_mut().client = Some(addr);
