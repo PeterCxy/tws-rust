@@ -6,13 +6,13 @@ use errors::*;
 use futures::{Future, Stream};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource};
+use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource, StreamThrottler};
 use websocket::OwnedMessage;
 use websocket::async::Client;
 use websocket::stream::async::Stream as WsStream;
 use std::net::SocketAddr;
 use tokio_io::AsyncRead;
-use tokio_io::codec::BytesCodec;
+use protocol::codec::BytesCodec; // TODO: Switch back to tokio_io when upgraded to 0.1.5
 use tokio_io::codec::Framed;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
@@ -166,16 +166,17 @@ pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues>
      */
     fn create(
         conn_id: String, handle: Handle, logger: util::Logger, client: TcpStream
-    ) -> (RcEventEmitter<ConnectionEvents, ConnectionValues>, SharedWriter<TcpSink>) {
+    ) -> (RcEventEmitter<ConnectionEvents, ConnectionValues>, SharedWriter<TcpSink>, StreamThrottler) {
         let (a, b) = Self::get_endpoint_descriptors();
 
         let emitter = util::new_emitter();
+        let read_throttler = StreamThrottler::new();
         let (sink, stream) = client.framed(BytesCodec::new()).split();
         // SharedWriter for sending to remote
         let remote_writer = SharedWriter::new();
 
         // Forward remote packets to client
-        let stream_work = stream.for_each(clone!(a, emitter, logger, conn_id; |p| {
+        let stream_work = read_throttler.wrap_stream(stream).for_each(clone!(a, emitter, logger, conn_id; |p| {
             do_log!(logger, INFO, "[{}] received {} bytes from {}", conn_id, p.len(), a);
             emitter.borrow().emit(ConnectionEvents::Data, ConnectionValues::Packet(p));
             Ok(())
@@ -205,12 +206,13 @@ pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues>
                 Ok(())
             })));
 
-        (emitter, remote_writer)
+        (emitter, remote_writer, read_throttler)
     }
 
     fn get_writer(&self) -> &SharedWriter<TcpSink>;
     fn get_conn_id(&self) -> &str;
     fn get_logger(&self) -> &util::Logger;
+    fn get_read_throttler(&self) -> &StreamThrottler;
 
     /*
      * Send a data buffer to remote via the SharedWriter

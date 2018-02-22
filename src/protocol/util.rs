@@ -177,12 +177,134 @@ impl<'a, F> Boxable for F
     where F: Future + 'a {}
 
 /*
+ * Facilities to throttle a stream
+ */
+
+/*
+ * Generic handler for throttling a stream
+ */
+pub trait ThrottlingHandler {
+    /*
+     * Pause the stream
+     * do not poll until it is resumed
+     */
+    fn pause(&self);
+
+    /*
+     * Resume the stream
+     */
+    fn resume(&self);
+
+    /*
+     * Has the stream been paused?
+     */
+    fn is_paused(&self) -> bool;
+}
+
+/*
+ * State object shared between StreamThrottler
+ * and ThrottledStream
+ */
+struct ThrottledStreamState {
+    task: Option<Task>,
+    paused: bool
+}
+
+/*
+ * An interface for pausing and resuming a stream
+ */
+pub struct StreamThrottler {
+    state: Rc<RefCell<ThrottledStreamState>>
+}
+
+impl StreamThrottler {
+    pub fn new() -> StreamThrottler {
+        StreamThrottler {
+            state: Rc::new(RefCell::new(ThrottledStreamState {
+                task: None,
+                paused: false
+            }))
+        }
+    }
+
+    /*
+     * Throttle a stream using this throttler
+     * it is recommended to use one throttler only with one stream
+     */
+    pub fn wrap_stream<S: Stream>(&self, stream: S) -> ThrottledStream<S> {
+        ThrottledStream {
+            stream,
+            state: self.state.clone()
+        }
+    }
+}
+
+impl ThrottlingHandler for StreamThrottler {
+    fn pause(&self) {
+        self.state.borrow_mut().paused = true;
+    }
+
+    fn resume(&self) {
+        let mut state = self.state.borrow_mut();
+        state.paused = false;
+        notify_task(&state.task);
+    }
+
+    fn is_paused(&self) -> bool {
+        self.state.borrow_mut().paused
+    }
+}
+
+impl Clone for StreamThrottler {
+    fn clone(&self) -> StreamThrottler {
+        StreamThrottler {
+            state: self.state.clone()
+        }
+    }
+}
+
+/*
+ * A wrapper around a stream
+ * throttled by StreamThrottler
+ */
+pub struct ThrottledStream<S: Stream> {
+    stream: S,
+    state: Rc<RefCell<ThrottledStreamState>>
+}
+
+impl<S: Stream> Stream for ThrottledStream<S> {
+    type Item = S::Item;
+    type Error = S::Error;
+
+    fn poll(&mut self) -> ::std::result::Result<Async<Option<S::Item>>, S::Error> {
+        let mut state = self.state.borrow_mut();
+
+        if state.task.is_none() {
+            state.task = Some(task::current()); // TODO: Abstract out this logic
+        }
+
+        if !state.paused {
+            // Only poll the original stream if the `paused` flag is not set
+            self.stream.poll()
+        } else {
+            Ok(Async::NotReady)
+        }
+    }
+}
+
+/*
+ * Maximum length of the queue in SharedWriter before calling pause()
+ */
+const QUEUE_MAX_LENGTH: usize = 4;
+
+/*
  * Shared state between SharedWriter and SharedStream
  */
 struct SharedStreamState<I, E> {
     marker: PhantomData<E>, // Placeholder
     queue: Vec<I>, // Items to be written
     finished: bool, // Whether this stream should finish on next poll()
+    throttling_handler: Option<Box<ThrottlingHandler>>,
     task: Option<Task> // The Task driving the stream
 }
 
@@ -229,6 +351,14 @@ impl<I: Debug, E> Stream for SharedStream<I, E> {
             // There is item to be sent.
             // Send the first element in the queue (buffer)
             let item = state.queue.remove(0);
+
+            if state.queue.len() < QUEUE_MAX_LENGTH && state.throttling_handler.is_some() {
+                let h = state.throttling_handler.as_ref().unwrap();
+                if h.is_paused() {
+                    h.resume();
+                }
+            }
+
             return Ok(Async::Ready(Some(item)));
         } else {
             // Nothing to be sent, but the stream
@@ -261,7 +391,8 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
                 marker: PhantomData,
                 queue: Vec::new(),
                 finished: false,
-                task: None
+                task: None,
+                throttling_handler: None
             }))
         }
     }
@@ -289,7 +420,14 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
         let mut state = self.state.borrow_mut();
         if !state.finished {
             state.queue.push(item);
-            Self::notify_task(&state.task);
+            notify_task(&state.task);
+
+            if state.queue.len() >= QUEUE_MAX_LENGTH && state.throttling_handler.is_some() {
+                let h = state.throttling_handler.as_ref().unwrap();
+                if !h.is_paused() {
+                    h.pause();
+                }
+            }
         }
     }
 
@@ -301,21 +439,25 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
         if !state.finished {
             state.finished = true;
             // TODO: Clear buffer after closing.
-            Self::notify_task(&state.task);
+            notify_task(&state.task);
         }
     }
 
-    /*
-     * Convenience method to notify a task in Option<Task>
-     * The task must be notified if a stream has something
-     * new to send or if the stream is finished.
-     * Failing to do so will cause the stream not being polled
-     * any more.
-     */
-    fn notify_task(task: &Option<Task>) {
-        if let Some(ref task) = *task {
-            task.notify();
-        }
+    pub fn set_throttling_handler<H: 'static + ThrottlingHandler>(&self, handler: H) {
+        self.state.borrow_mut().throttling_handler = Some(Box::new(handler));
+    }
+}
+
+/*
+ * Convenience method to notify a task in Option<Task>
+ * The task must be notified if a stream has something
+ * new to send or if the stream is finished.
+ * Failing to do so will cause the stream not being polled
+ * any more.
+ */
+fn notify_task(task: &Option<Task>) {
+    if let Some(ref task) = *task {
+        task.notify();
     }
 }
 

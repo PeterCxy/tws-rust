@@ -4,6 +4,7 @@
  * and the concrete client / server implementation
  * but without user interface.
  */
+mod codec;
 #[macro_use]
 pub mod util;
 pub mod protocol;

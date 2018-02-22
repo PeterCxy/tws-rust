@@ -7,7 +7,7 @@
 use futures::future::{Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
 use protocol::protocol as proto;
-use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource};
+use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource, StreamThrottler};
 use protocol::shared::{TwsService, TwsConnection, TcpSink, ConnectionEvents, ConnectionValues};
 use rand::{self, Rng};
 use std::cell::RefCell;
@@ -299,7 +299,7 @@ impl ClientSession {
 
         // Listen to close event
         conn.subscribe(ConnectionEvents::Close, clone!(conn_id, writer; |_| {
-            ClientSession::close_conn(&mut state.borrow_mut(), &writer, &conn_id);
+            ClientSession::close_conn(&state, &writer, &conn_id);
         }));
 
         // Add the connection to active connection list
@@ -309,15 +309,17 @@ impl ClientSession {
     /*
      * Static method to close a connection (either an active one or a pending one)
      */
-    fn close_conn(state: &mut ClientSessionState, writer: &SharedWriter<ServerSink>, conn_id: &str) {
-        if state.connections.contains_key(conn_id) {
-            state.connections.remove(conn_id);
+    fn close_conn(state: &Rc<RefCell<ClientSessionState>>, writer: &SharedWriter<ServerSink>, conn_id: &str) {
+        let is_activated = state.borrow().connections.contains_key(conn_id);
+        let is_pending = state.borrow().pending_connections.contains_key(conn_id);
+        if is_activated {
+            state.borrow_mut().connections.remove(conn_id);
 
             // Notify the server about closing this connection
             // TODO: Notify only when needed.
             writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
-        } else if state.pending_connections.contains_key(conn_id) {
-            state.pending_connections.remove(conn_id);
+        } else if is_pending {
+            state.borrow_mut().pending_connections.remove(conn_id);
         }
     }
 }
@@ -351,7 +353,7 @@ impl TwsService<Box<WsStream + Send>> for ClientSession {
 
     fn on_connect_state(&self, conn_id: &str, ok: bool) {
         if !ok {
-            Self::close_conn(&mut self.state.borrow_mut(), &self.writer, conn_id);
+            Self::close_conn(&self.state, &self.writer, conn_id);
         } else {
             if self.state.borrow().pending_connections.contains_key(conn_id) {
                 // If there is a corresponding pending connection, activate it.
@@ -401,7 +403,8 @@ struct ClientConnection {
     conn_id: String,
     logger: util::Logger,
     event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>,
-    client_writer: SharedWriter<TcpSink>
+    client_writer: SharedWriter<TcpSink>,
+    read_throttler: StreamThrottler
 }
 
 impl ClientConnection {
@@ -410,13 +413,14 @@ impl ClientConnection {
      * Do not use this if the connection should be pending.
      */
     fn new(conn_id: String, logger: util::Logger, handle: Handle, client: TcpStream) -> ClientConnection {
-        let (emitter, writer) = Self::create(conn_id.clone(), handle, logger.clone(), client);
+        let (emitter, writer, read_throttler) = Self::create(conn_id.clone(), handle, logger.clone(), client);
 
         ClientConnection {
             conn_id,
             logger,
             event_emitter: emitter,
-            client_writer: writer
+            client_writer: writer,
+            read_throttler
         }
     }
 }
@@ -436,6 +440,10 @@ impl TwsConnection for ClientConnection {
 
     fn get_writer(&self) -> &SharedWriter<TcpSink> {
         &self.client_writer
+    }
+
+    fn get_read_throttler(&self) -> &StreamThrottler {
+        &self.read_throttler
     }
 }
 

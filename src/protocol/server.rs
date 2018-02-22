@@ -9,7 +9,9 @@ use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
 use protocol::shared::{TwsService, TwsConnection, TcpSink, ConnectionEvents, ConnectionValues};
-use protocol::util::{self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent, SharedWriter};
+use protocol::util::{
+    self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent,
+    SharedWriter, StreamThrottler, ThrottlingHandler};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -110,7 +112,39 @@ struct ServerSessionState {
     remote: Option<SocketAddr>, // The remote address (will be available after handshake)
     client: Option<SocketAddr>, // The client address (will be available when spawned)
     handshaked: bool, // Have we finished the handshake?
+    paused: bool,
     remote_connections: HashMap<String, RemoteConnection> // Map from connection ids to remote connection objects.
+}
+
+struct RemoteReadThrottler {
+    state: Rc<RefCell<ServerSessionState>>
+}
+
+impl ThrottlingHandler for RemoteReadThrottler {
+    fn pause(&self) {
+        let mut state = self.state.borrow_mut();
+        state.paused = true;
+        for (_, v) in &state.remote_connections {
+            // TODO: DO NOT USE `pause()` and `resume()` directly
+            // because the client connections might also want to
+            // throttle them. We should make sure that only when
+            // both the server and the client want to resume them,
+            // can they be resumed.
+            v.get_read_throttler().pause();
+        }
+    }
+
+    fn resume(&self) {
+        let mut state = self.state.borrow_mut();
+        state.paused = false;
+        for (_, v) in &state.remote_connections {
+            v.get_read_throttler().resume();
+        }
+    }
+
+    fn is_paused(&self) -> bool {
+        self.state.borrow().paused
+    }
 }
 
 /*
@@ -142,6 +176,7 @@ impl ServerSession {
                 remote: None,
                 client: None,
                 handshaked: false,
+                paused: false,
                 remote_connections: HashMap::new()
             }))
         }
@@ -160,6 +195,10 @@ impl ServerSession {
 
         // Now we have the client address
         state.borrow_mut().client = Some(addr);
+
+        self.writer.set_throttling_handler(RemoteReadThrottler {
+            state: self.state.clone()
+        });
 
         self.run_service(client)
             .then(clone!(state; |_| {
@@ -185,10 +224,11 @@ impl ServerSession {
     }
 
     // Clean-up job after a logical connection is closed.
-    fn close_conn(state: &mut ServerSessionState, writer: &SharedWriter<ClientSink>, conn_id: &str) {
-        let ref mut conns = state.remote_connections;
-        if conns.contains_key(conn_id) {
-            conns.remove(conn_id);
+    fn close_conn(state: &Rc<RefCell<ServerSessionState>>, writer: &SharedWriter<ClientSink>, conn_id: &str) {
+        //let ref mut conns = state.remote_connections;
+        let has_conn = state.borrow().remote_connections.contains_key(conn_id);
+        if has_conn {
+            state.borrow_mut().remote_connections.remove(conn_id);
 
             // Notify the client that this logical connection has been closed.
             writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
@@ -222,14 +262,16 @@ impl TwsService<TcpStream> for ServerSession {
     }
 
     fn on_handshake(&self, addr: SocketAddr) {
-        let mut state = self.state.borrow_mut();
-        do_log!(self.logger, INFO, "New session: {} <=> {}", state.client.unwrap(), addr);
+        {
+            let mut state = self.state.borrow_mut();
+            do_log!(self.logger, INFO, "New session: {} <=> {}", state.client.unwrap(), addr);
 
-        // Remote address is now available.
-        state.remote = Some(addr);
+            // Remote address is now available.
+            state.remote = Some(addr);
 
-        // Set handshake flag to true
-        state.handshaked = true;
+            // Set handshake flag to true
+            state.handshaked = true;
+        }
 
         // Send anything back to activate the connection
         self.writer.feed(OwnedMessage::Text(String::from("hello")));
@@ -257,7 +299,7 @@ impl TwsService<TcpStream> for ServerSession {
                 // Remote connection closed
                 conn.subscribe(ConnectionEvents::Close, clone!(writer, state, conn_id_owned; |_| {
                     // Call shared clean-up code for this.
-                    Self::close_conn(&mut state.borrow_mut(), &writer, &conn_id_owned);
+                    Self::close_conn(&state, &writer, &conn_id_owned);
                 }));
 
                 // Notify the client that this connection is now up.
@@ -288,7 +330,7 @@ impl TwsService<TcpStream> for ServerSession {
 
         if !ok {
             // Call shared clean-up code to clean up the logical connection.
-            Self::close_conn(&mut self.state.borrow_mut(), &self.writer, conn_id);
+            Self::close_conn(&self.state, &self.writer, conn_id);
         }
         // Client side will not send ok = false.
     }
@@ -316,7 +358,8 @@ struct RemoteConnection {
     conn_id: String,
     logger: util::Logger,
     remote_writer: SharedWriter<TcpSink>, // Writer of remote connection
-    event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>
+    event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>,
+    read_throttler: StreamThrottler
 }
 
 impl RemoteConnection {
@@ -331,7 +374,7 @@ impl RemoteConnection {
         TcpStream::connect(addr, &handle.clone())
             .chain_err(|| "Connection failed")
             .map(move |s| {
-                let (emitter, remote_writer) =
+                let (emitter, remote_writer, read_throttler) =
                     Self::create(conn_id_owned.clone(), handle, logger.clone(), s);
 
                 // Create RemoteConnection object
@@ -340,7 +383,8 @@ impl RemoteConnection {
                     conn_id: conn_id_owned,
                     logger,
                     remote_writer,
-                    event_emitter: emitter
+                    event_emitter: emitter,
+                    read_throttler
                 }
             })
             ._box()
@@ -358,6 +402,10 @@ impl TwsConnection for RemoteConnection {
 
     fn get_writer(&self) -> &SharedWriter<TcpSink> {
         &self.remote_writer
+    }
+
+    fn get_read_throttler(&self) -> &StreamThrottler {
+        &self.read_throttler
     }
 }
 
