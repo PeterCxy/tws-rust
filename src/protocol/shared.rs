@@ -114,7 +114,7 @@ pub trait TwsService<S: 'static + WsStream>: 'static + Sized {
             // Implementations can override these to control event handling.
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
             proto::Packet::Connect(conn_id) => self.on_connect(conn_id),
-            proto::Packet::ConnectionState((conn_id, ok)) => self.on_connect_state(conn_id, ok),
+            proto::Packet::ConnectionState((conn_id, state)) => self.on_connect_state(conn_id, state),
             proto::Packet::Data((conn_id, data)) => self.on_data(conn_id, data),
 
             // Process unknown packets
@@ -128,7 +128,7 @@ pub trait TwsService<S: 'static + WsStream>: 'static + Sized {
     fn on_unknown(&self) {}
     fn on_handshake(&self, _addr: SocketAddr) {}
     fn on_connect(&self, _conn_id: &str) {}
-    fn on_connect_state(&self, _conn_id: &str, _ok: bool) {}
+    fn on_connect_state(&self, _conn_id: &str, _ok: proto::ConnectionState) {}
     fn on_data(&self, _conn_id: &str, _data: &[u8]) {}
 }
 

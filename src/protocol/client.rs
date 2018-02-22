@@ -317,7 +317,7 @@ impl ClientSession {
 
             // Notify the server about closing this connection
             // TODO: Notify only when needed.
-            writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
+            writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, proto::ConnectionState::Closed)));
         } else if is_pending {
             state.borrow_mut().pending_connections.remove(conn_id);
         }
@@ -351,16 +351,16 @@ impl TwsService<Box<WsStream + Send>> for ClientSession {
         }
     }
 
-    fn on_connect_state(&self, conn_id: &str, ok: bool) {
-        if !ok {
+    fn on_connect_state(&self, conn_id: &str, state: proto::ConnectionState) {
+        if state.is_closed() {
             Self::close_conn(&self.state, &self.writer, conn_id);
-        } else {
+        } else if state.is_ok() {
             if self.state.borrow().pending_connections.contains_key(conn_id) {
                 // If there is a corresponding pending connection, activate it.
                 self.activate_connection(conn_id);
             } else {
                 // Else we instruct the server to close the unknown connection
-                self.writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
+                self.writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, proto::ConnectionState::Closed)));
             }
         }
     }

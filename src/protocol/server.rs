@@ -231,7 +231,7 @@ impl ServerSession {
             state.borrow_mut().remote_connections.remove(conn_id);
 
             // Notify the client that this logical connection has been closed.
-            writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, false)));
+            writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, proto::ConnectionState::Closed)));
         }
     }
 }
@@ -304,7 +304,7 @@ impl TwsService<TcpStream> for ServerSession {
 
                 // Notify the client that this connection is now up.
                 do_log!(logger, INFO, "[{}] Connection estabilished.", conn_id_owned);
-                writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, true)));
+                writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, proto::ConnectionState::Ok)));
 
                 // Store the connection inside the table.
                 state.borrow_mut().remote_connections.insert(conn_id_owned, conn);
@@ -318,17 +318,17 @@ impl TwsService<TcpStream> for ServerSession {
                     // about this.
                     // We do not need any clean-up job.
                     do_log!(logger, ERROR, "[{}] Failed to establish connection: {:?}", conn_id_owned, r.unwrap_err());
-                    writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, false)));
+                    writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, proto::ConnectionState::Closed)));
                 }
                 Ok(())
             }));
         self.handle.spawn(conn_work);
     }
 
-    fn on_connect_state(&self, conn_id: &str, ok: bool) {
+    fn on_connect_state(&self, conn_id: &str, state: proto::ConnectionState) {
         if !self.check_handshaked() { return; }
 
-        if !ok {
+        if state.is_closed() {
             // Call shared clean-up code to clean up the logical connection.
             Self::close_conn(&self.state, &self.writer, conn_id);
         }

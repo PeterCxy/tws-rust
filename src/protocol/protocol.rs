@@ -35,7 +35,7 @@ use protocol::util;
 pub enum Packet<'a> {
     Handshake(SocketAddr),
     Connect(&'a str),
-    ConnectionState((&'a str, bool)),
+    ConnectionState((&'a str, ConnectionState)),
     Data((&'a str, &'a [u8])),
     Unrecognized
 }
@@ -228,14 +228,73 @@ pub fn connect_parse<'a>(passwd: &str, packet: &'a [u8]) -> Result<&'a str> {
  * to notify changes on the state of a logical
  * connection in the current WebSocket channel.
  * 
- * > CONNECTION [conn id] <OK|CLOSED>
+ * > CONNECTION [conn id] <OK|CLOSED|PAUSE|RESUME>
  * 
  */
-pub fn connect_state_build(conn_id: &str, ok: bool) -> String {
-    format!("CONNECTION {} {}", conn_id, if ok { "OK" } else { "CLOSED" })
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConnectionState {
+    Ok,
+    Closed,
+    Pause,
+    Resume
 }
 
-pub fn connect_state_parse<'a>(packet: &'a [u8]) -> Result<(&'a str, bool)> {
+impl ToString for ConnectionState {
+    fn to_string(&self) -> String {
+        match *self {
+            ConnectionState::Ok => "OK",
+            ConnectionState::Closed => "CLOSED",
+            ConnectionState::Pause => "PAUSE",
+            ConnectionState::Resume => "RESUME"
+        }.to_owned()
+    }
+}
+
+impl ConnectionState {
+    fn parse(s: &str) -> Result<ConnectionState> {
+        match s {
+            "OK" => Ok(ConnectionState::Ok),
+            "CLOSED" => Ok(ConnectionState::Closed),
+            "PAUSE" => Ok(ConnectionState::Pause),
+            "RESUME" => Ok(ConnectionState::Resume),
+            _ => Err("Not a Connection State packet".into())
+        }
+    }
+
+    pub fn is_ok(&self) -> bool {
+        match *self {
+            ConnectionState::Ok => true,
+            _ => false
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        match *self {
+            ConnectionState::Closed => true,
+            _ => false
+        }
+    }
+
+    pub fn is_pause(&self) -> bool {
+        match *self {
+            ConnectionState::Pause => true,
+            _ => false
+        }
+    }
+
+    pub fn is_resume(&self) -> bool {
+        match *self {
+            ConnectionState::Resume => true,
+            _ => false
+        }
+    }
+}
+
+pub fn connect_state_build(conn_id: &str, state: ConnectionState) -> String {
+    format!("CONNECTION {} {}", conn_id, state.to_string())
+}
+
+pub fn connect_state_parse<'a>(packet: &'a [u8]) -> Result<(&'a str, ConnectionState)> {
     if packet.len() < 10 || packet[0..10] != "CONNECTION".as_bytes()[0..10] {
         return Err("Not a Connect State packet".into());
     }
@@ -248,14 +307,7 @@ pub fn connect_state_parse<'a>(packet: &'a [u8]) -> Result<(&'a str, bool)> {
                 return Err("Not a Connect State packet".into());
             }
 
-            let conn_id = arr[1];
-            if arr[2] == "OK" {
-                Ok((conn_id, true))
-            } else if arr[2] == "CLOSED" {
-                Ok((conn_id, false))
-            } else {
-                Err("Not a Connect State packet".into())
-            }
+            ConnectionState::parse(arr[2]).map(|r| (arr[1], r))
         })
 }
 
@@ -365,22 +417,22 @@ mod tests {
 
     #[test]
     fn connect_state_build_1() {
-        assert_eq!("CONNECTION abcde OK", connect_state_build("abcde", true));
+        assert_eq!("CONNECTION abcde OK", connect_state_build("abcde", ConnectionState::Ok));
     }
 
     #[test]
     fn connect_state_build_2() {
-        assert_eq!("CONNECTION cbdea CLOSED", connect_state_build("cbdea", false));
+        assert_eq!("CONNECTION cbdea CLOSED", connect_state_build("cbdea", ConnectionState::Closed));
     }
 
     #[test]
     fn connect_state_parse_1() {
-        assert_eq!(("abcde", true), connect_state_parse("CONNECTION abcde OK".as_bytes()).unwrap());
+        assert_eq!(("abcde", ConnectionState::Ok), connect_state_parse("CONNECTION abcde OK".as_bytes()).unwrap());
     }
 
     #[test]
     fn connect_state_parse_2() {
-        assert_eq!(("cbdae", false), connect_state_parse("CONNECTION cbdae CLOSED".as_bytes()).unwrap());
+        assert_eq!(("cbdae", ConnectionState::Closed), connect_state_parse("CONNECTION cbdae CLOSED".as_bytes()).unwrap());
     }
 
     #[test]
