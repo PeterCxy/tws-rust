@@ -6,22 +6,78 @@ use errors::*;
 use futures::{Future, Stream};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource, StreamThrottler};
+use protocol::util::{
+    self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter,
+    RcEventEmitter, EventSource, StreamThrottler, ThrottlingHandler};
 use websocket::OwnedMessage;
 use websocket::async::Client;
 use websocket::stream::async::Stream as WsStream;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use tokio_io::AsyncRead;
 use protocol::codec::BytesCodec; // TODO: Switch back to tokio_io when upgraded to 0.1.5
 use tokio_io::codec::Framed;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
 
+pub trait TwsServiceState<C: TwsConnection>: 'static + Sized {
+    fn get_connections(&self) -> &HashMap<String, C>;
+
+    /*
+     * The `paused` state of a TwsService session
+     * indicates whether the underlying WebSocket
+     * connection has been congested or not.
+     */
+    fn set_paused(&mut self, paused: bool);
+    fn get_paused(&self) -> bool;
+}
+
+/*
+ * Throttle the TCP connection between
+ *  1. server and remote
+ *  2. local and client
+ * based on the state of the WebSocket stream.
+ * If the stream is congested, mark the corresponding
+ * TCP connections as paused.
+ */
+pub struct TwsTcpReadThrottler<C: TwsConnection, T: TwsServiceState<C>> {
+    _marker: PhantomData<C>,
+    state: Rc<RefCell<T>>
+}
+
+impl<C, T> ThrottlingHandler for TwsTcpReadThrottler<C, T>
+    where C: TwsConnection,
+          T: TwsServiceState<C>
+{
+    fn pause(&self) {
+        let mut state = self.state.borrow_mut();
+        state.set_paused(true);
+        for (_, v) in state.get_connections() {
+            v.pause();
+        }
+    }
+
+    fn resume(&self) {
+        let mut state = self.state.borrow_mut();
+        state.set_paused(false);
+        for (_, v) in state.get_connections() {
+            v.resume();
+        }
+    }
+
+    fn is_paused(&self) -> bool {
+        self.state.borrow().get_paused()
+    }
+}
+
 /*
  * Shared logic abstracted from both the server and the client
  * should be implemented only on structs
  */
-pub trait TwsService<S: 'static + WsStream>: 'static + Sized {
+pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStream>: 'static + Sized {
     /*
      * Required fields simulated by required methods.
      */
@@ -29,6 +85,7 @@ pub trait TwsService<S: 'static + WsStream>: 'static + Sized {
     fn get_writer(&self) -> &SharedWriter<SplitSink<Client<S>>>;
     fn get_heartbeat_agent(&self) -> &HeartbeatAgent<SplitSink<Client<S>>>;
     fn get_logger(&self) -> &util::Logger;
+    fn get_state(&self) -> &Rc<RefCell<T>>;
 
     /*
      * Execute this service.
@@ -40,6 +97,11 @@ pub trait TwsService<S: 'static + WsStream>: 'static + Sized {
     fn run_service<'a>(self, client: Client<S>) -> BoxFuture<'a, ()> {
         let logger = self.get_logger().clone();
         let (sink, stream) = client.split();
+
+        self.get_writer().set_throttling_handler(TwsTcpReadThrottler {
+            _marker: PhantomData,
+            state: self.get_state().clone()
+        });
 
         // Obtain a future representing the writing tasks.
         let sink_write = self.get_writer().run(sink).map_err(clone!(logger; |e| {
@@ -155,7 +217,7 @@ pub type TcpSink = SplitSink<Framed<TcpStream, BytesCodec>>;
  *  1. from server to remote
  *  2. from client to local (which is TWS client)
  */
-pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues> {
+pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, ConnectionValues> {
     fn get_endpoint_descriptors() -> (&'static str, &'static str) {
         ("remote", "client")
     }
@@ -213,6 +275,7 @@ pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues>
     fn get_conn_id(&self) -> &str;
     fn get_logger(&self) -> &util::Logger;
     fn get_read_throttler(&self) -> &StreamThrottler;
+    fn get_read_pause_counter(&self) -> &Cell<usize>;
 
     /*
      * Send a data buffer to remote via the SharedWriter
@@ -226,5 +289,31 @@ pub trait TwsConnection: Sized + EventSource<ConnectionEvents, ConnectionValues>
 
     fn close(&self) {
         self.get_writer().close();
+    }
+
+    /*
+     * Pause the reading part if it is not paused yet
+     */
+    fn pause(&self) {
+        let counter = self.get_read_pause_counter();
+        if counter.get() == 0 {
+            self.get_read_throttler().pause();
+        }
+        counter.set(counter.get() + 1);
+    }
+
+    /*
+     * Resume the reading part if no one requires it
+     * to be paused
+     */
+    fn resume(&self) {
+        let counter = self.get_read_pause_counter();
+        if counter.get() == 1 {
+            self.get_read_throttler().resume();
+        }
+
+        if counter.get() > 0 {
+            counter.set(counter.get() - 1);
+        }
     }
 }

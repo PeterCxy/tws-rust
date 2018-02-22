@@ -8,11 +8,13 @@ use futures::Stream;
 use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::shared::{TwsService, TwsConnection, TcpSink, ConnectionEvents, ConnectionValues};
+use protocol::shared::{
+    TwsServiceState, TwsService, TwsConnection,
+    TcpSink, ConnectionEvents, ConnectionValues};
 use protocol::util::{
     self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent,
-    SharedWriter, StreamThrottler, ThrottlingHandler};
-use std::cell::RefCell;
+    SharedWriter, StreamThrottler};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -116,34 +118,17 @@ struct ServerSessionState {
     remote_connections: HashMap<String, RemoteConnection> // Map from connection ids to remote connection objects.
 }
 
-struct RemoteReadThrottler {
-    state: Rc<RefCell<ServerSessionState>>
-}
-
-impl ThrottlingHandler for RemoteReadThrottler {
-    fn pause(&self) {
-        let mut state = self.state.borrow_mut();
-        state.paused = true;
-        for (_, v) in &state.remote_connections {
-            // TODO: DO NOT USE `pause()` and `resume()` directly
-            // because the client connections might also want to
-            // throttle them. We should make sure that only when
-            // both the server and the client want to resume them,
-            // can they be resumed.
-            v.get_read_throttler().pause();
-        }
+impl TwsServiceState<RemoteConnection> for ServerSessionState {
+    fn get_connections(&self) -> &HashMap<String, RemoteConnection> {
+        &self.remote_connections
     }
 
-    fn resume(&self) {
-        let mut state = self.state.borrow_mut();
-        state.paused = false;
-        for (_, v) in &state.remote_connections {
-            v.get_read_throttler().resume();
-        }
+    fn get_paused(&self) -> bool {
+        self.paused
     }
 
-    fn is_paused(&self) -> bool {
-        self.state.borrow().paused
+    fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
     }
 }
 
@@ -196,10 +181,6 @@ impl ServerSession {
         // Now we have the client address
         state.borrow_mut().client = Some(addr);
 
-        self.writer.set_throttling_handler(RemoteReadThrottler {
-            state: self.state.clone()
-        });
-
         self.run_service(client)
             .then(clone!(state; |_| {
                 // Clean-up job
@@ -236,7 +217,7 @@ impl ServerSession {
     }
 }
 
-impl TwsService<TcpStream> for ServerSession {
+impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSession {
     fn get_passwd(&self) -> &str {
         &self.option.passwd
     }
@@ -251,6 +232,10 @@ impl TwsService<TcpStream> for ServerSession {
 
     fn get_logger(&self) -> &util::Logger {
         &self.logger
+    }
+
+    fn get_state(&self) -> &Rc<RefCell<ServerSessionState>> {
+        &self.state
     }
 
     fn on_unknown(&self) {
@@ -359,7 +344,8 @@ struct RemoteConnection {
     logger: util::Logger,
     remote_writer: SharedWriter<TcpSink>, // Writer of remote connection
     event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>,
-    read_throttler: StreamThrottler
+    read_throttler: StreamThrottler,
+    read_pause_counter: Cell<usize>
 }
 
 impl RemoteConnection {
@@ -384,7 +370,8 @@ impl RemoteConnection {
                     logger,
                     remote_writer,
                     event_emitter: emitter,
-                    read_throttler
+                    read_throttler,
+                    read_pause_counter: Cell::new(0)
                 }
             })
             ._box()
@@ -406,6 +393,10 @@ impl TwsConnection for RemoteConnection {
 
     fn get_read_throttler(&self) -> &StreamThrottler {
         &self.read_throttler
+    }
+
+    fn get_read_pause_counter(&self) -> &Cell<usize> {
+        &self.read_pause_counter
     }
 }
 

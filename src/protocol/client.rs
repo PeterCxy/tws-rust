@@ -8,9 +8,11 @@ use futures::future::{Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
 use protocol::protocol as proto;
 use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource, StreamThrottler};
-use protocol::shared::{TwsService, TwsConnection, TcpSink, ConnectionEvents, ConnectionValues};
+use protocol::shared::{
+    TwsServiceState, TwsService, TwsConnection,
+    TcpSink, ConnectionEvents, ConnectionValues};
 use rand::{self, Rng};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -151,7 +153,22 @@ type ServerSink = SplitSink<ServerConn>;
 struct ClientSessionState {
     connected: bool,
     connections: HashMap<String, ClientConnection>,
-    pending_connections: HashMap<String, PendingClientConnection>
+    pending_connections: HashMap<String, PendingClientConnection>,
+    paused: bool
+}
+
+impl TwsServiceState<ClientConnection> for ClientSessionState {
+    fn get_connections(&self) -> &HashMap<String, ClientConnection> {
+        &self.connections
+    }
+
+    fn get_paused(&self) -> bool {
+        self.paused
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
 }
 
 /*
@@ -227,7 +244,8 @@ impl ClientSession {
             state: Rc::new(RefCell::new(ClientSessionState {
                 connected: false,
                 connections: HashMap::new(),
-                pending_connections: HashMap::new()
+                pending_connections: HashMap::new(),
+                paused: false
             }))
         }
     }
@@ -324,7 +342,7 @@ impl ClientSession {
     }
 }
 
-impl TwsService<Box<WsStream + Send>> for ClientSession {
+impl TwsService<ClientConnection, ClientSessionState, Box<WsStream + Send>> for ClientSession {
     fn get_passwd(&self) -> &str {
         &self.option.passwd
     }
@@ -339,6 +357,10 @@ impl TwsService<Box<WsStream + Send>> for ClientSession {
 
     fn get_heartbeat_agent(&self) -> &HeartbeatAgent<ServerSink> {
         &self.heartbeat_agent
+    }
+
+    fn get_state(&self) -> &Rc<RefCell<ClientSessionState>> {
+        &self.state
     }
 
     fn on_unknown(&self) {
@@ -404,7 +426,8 @@ struct ClientConnection {
     logger: util::Logger,
     event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>,
     client_writer: SharedWriter<TcpSink>,
-    read_throttler: StreamThrottler
+    read_throttler: StreamThrottler,
+    read_pause_counter: Cell<usize>
 }
 
 impl ClientConnection {
@@ -420,7 +443,8 @@ impl ClientConnection {
             logger,
             event_emitter: emitter,
             client_writer: writer,
-            read_throttler
+            read_throttler,
+            read_pause_counter: Cell::new(0)
         }
     }
 }
@@ -444,6 +468,10 @@ impl TwsConnection for ClientConnection {
 
     fn get_read_throttler(&self) -> &StreamThrottler {
         &self.read_throttler
+    }
+
+    fn get_read_pause_counter(&self) -> &Cell<usize> {
+        &self.read_pause_counter
     }
 }
 
