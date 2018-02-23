@@ -48,7 +48,7 @@ fn test_server() {
     let mut server = TwsServer::new(core.handle(), TwsServerOption {
         listen: "127.0.0.1:23356".parse().unwrap(),
         passwd: String::from("testpassword"),
-        timeout: 1000
+        timeout: 5000
     });
     server.on_log(|l, m| {
         println!("{:?}: {:?}", l, m);
@@ -62,10 +62,10 @@ fn test_client() {
     let mut client = TwsClient::new(core.handle(), TwsClientOption {
         connections: 2,
         listen: "127.0.0.1:23360".parse().unwrap(),
-        remote: "127.0.0.1:80".parse().unwrap(),
+        remote: "127.0.0.1:5201".parse().unwrap(),
         server: String::from("ws://127.0.0.1:23356/"),
         passwd: String::from("testpassword"),
-        timeout: 1000
+        timeout: 5000
     });
     client.on_log(|l, m| {
         // TODO: Extract common logging logic.

@@ -4,6 +4,7 @@
  * Refer to `protocol.rs` for detailed description
  * of the protocol.
  */
+use bytes::Bytes;
 use futures::Stream;
 use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
@@ -326,10 +327,11 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
     fn on_data(&self, conn_id: &str, data: &[u8]) {
         if !self.check_handshaked() { return; }
         
-        let ref conns = self.state.borrow().remote_connections;
-        if let Some(conn) = conns.get(conn_id) {
-            // If the designated connection exists, just forward the data.
-            conn.send(data);
+        let writer = self.state.borrow().remote_connections.get(conn_id)
+            .map(|conn| conn.get_writer().clone());
+        match writer {
+            Some(writer) => writer.feed(Bytes::from(data)),
+            None => ()
         }
     }
 }

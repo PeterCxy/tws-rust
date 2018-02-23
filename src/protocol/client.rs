@@ -4,6 +4,7 @@
  * Refer to `protocol.rs` for detailed description
  * of the protocol.
  */
+use bytes::Bytes;
 use futures::future::{Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
 use protocol::protocol as proto;
@@ -389,9 +390,11 @@ impl TwsService<ClientConnection, ClientSessionState, Box<WsStream + Send>> for 
     }
 
     fn on_data(&self, conn_id: &str, data: &[u8]) {
-        let state = self.state.borrow();
-        if let Some(conn) = state.connections.get(conn_id) {
-            conn.send(data);
+        let writer = self.state.borrow().connections.get(conn_id)
+            .map(|conn| conn.get_writer().clone());
+        match writer {
+            Some(writer) => writer.feed(Bytes::from(data)),
+            None => ()
         }
     }
 }

@@ -1,7 +1,7 @@
 /*
  * Shared implementation details between server and client
  */
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use errors::*;
 use futures::{Future, Stream};
 use futures::stream::SplitSink;
@@ -293,8 +293,7 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
         });
 
         // Forward remote packets to client
-        let stream_work = read_throttler.wrap_stream(stream).for_each(clone!(a, emitter, logger, conn_id; |p| {
-            do_log!(logger, INFO, "[{}] received {} bytes from {}", conn_id, p.len(), a);
+        let stream_work = read_throttler.wrap_stream(stream).for_each(clone!(emitter; |p| {
             emitter.borrow().emit(ConnectionEvents::Data, ConnectionValues::Packet(p));
             Ok(())
         })).map_err(clone!(a, b, logger, conn_id; |e| {
@@ -332,16 +331,6 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
     fn get_read_throttler(&mut self) -> &mut StreamThrottler;
     fn get_read_pause_counter(&self) -> usize;
     fn set_read_pause_counter(&mut self, counter: usize);
-
-    /*
-     * Send a data buffer to remote via the SharedWriter
-     * created while connecting
-     */
-    fn send(&self, data: &[u8]) {
-        // TODO: Do not feed if not connected
-        do_log!(self.get_logger(), INFO, "[{}] sending {} bytes to {}", self.get_conn_id(), data.len(), Self::get_endpoint_descriptors().0);
-        self.get_writer().feed(Bytes::from(data));
-    }
 
     fn close(&self) {
         self.get_writer().close();
