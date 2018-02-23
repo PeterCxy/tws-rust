@@ -12,7 +12,7 @@ use protocol::util::{
 use websocket::OwnedMessage;
 use websocket::async::Client;
 use websocket::stream::async::Stream as WsStream;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -24,7 +24,7 @@ use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
 
 pub trait TwsServiceState<C: TwsConnection>: 'static + Sized {
-    fn get_connections(&self) -> &HashMap<String, C>;
+    fn get_connections(&mut self) -> &mut HashMap<String, C>;
 
     /*
      * The `paused` state of a TwsService session
@@ -52,7 +52,7 @@ impl<C, T> ThrottlingHandler for TwsTcpReadThrottler<C, T>
     where C: TwsConnection,
           T: TwsServiceState<C>
 {
-    fn pause(&self) {
+    fn pause(&mut self) {
         let mut state = self.state.borrow_mut();
         state.set_paused(true);
         for (_, v) in state.get_connections() {
@@ -60,7 +60,7 @@ impl<C, T> ThrottlingHandler for TwsTcpReadThrottler<C, T>
         }
     }
 
-    fn resume(&self) {
+    fn resume(&mut self) {
         let mut state = self.state.borrow_mut();
         state.set_paused(false);
         for (_, v) in state.get_connections() {
@@ -176,12 +176,30 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
             // Implementations can override these to control event handling.
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
             proto::Packet::Connect(conn_id) => self.on_connect(conn_id),
-            proto::Packet::ConnectionState((conn_id, state)) => self.on_connect_state(conn_id, state),
+            proto::Packet::ConnectionState((conn_id, state)) => self._on_connect_state(conn_id, state),
             proto::Packet::Data((conn_id, data)) => self.on_data(conn_id, data),
 
             // Process unknown packets
             _ => self.on_unknown()
         }
+    }
+
+    /*
+     * Process `Pause` and `Resume` states
+     * which is identical between the client and the server
+     * 
+     * Pause or resume the `read` part of the corresponding connection
+     * on request.
+     */
+    fn _on_connect_state(&self, conn_id: &str, conn_state: proto::ConnectionState) {
+        if conn_state.is_pause() {
+            self.get_state().borrow_mut().get_connections().get_mut(conn_id)
+                .map_or((), |c| c.pause());
+        } else if conn_state.is_resume() {
+            self.get_state().borrow_mut().get_connections().get_mut(conn_id)
+                .map_or((), |c| c.resume());
+        }
+        self.on_connect_state(conn_id, conn_state);
     }
 
     /*
@@ -213,6 +231,37 @@ pub enum ConnectionValues {
 pub type TcpSink = SplitSink<Framed<TcpStream, BytesCodec>>;
 
 /*
+ * Handler of throttling events from the writing part of
+ * the TCP connection
+ *  1. from server to remote
+ *  2. from local to client
+ * and convert them into TWS Connection State messages
+ * to instruct the other side to block or resume
+ * the reading part.
+ */
+pub struct TwsTcpWriteThrottlingHandler<S: 'static + WsStream> {
+    conn_id: String,
+    ws_writer: SharedWriter<SplitSink<Client<S>>>,
+    paused: bool
+}
+
+impl<S: 'static + WsStream> ThrottlingHandler for TwsTcpWriteThrottlingHandler<S> {
+    fn pause(&mut self) {
+        self.paused = true;
+        self.ws_writer.feed(OwnedMessage::Text(proto::connect_state_build(&self.conn_id, proto::ConnectionState::Pause)));
+    }
+
+    fn resume(&mut self) {
+        self.paused = false;
+        self.ws_writer.feed(OwnedMessage::Text(proto::connect_state_build(&self.conn_id, proto::ConnectionState::Resume)));
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused
+    }
+}
+
+/*
  * Shared logic for TCP connection
  *  1. from server to remote
  *  2. from client to local (which is TWS client)
@@ -226,8 +275,9 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
      * Static method to bootstrap the connection
      * set up the event emitter and writer
      */
-    fn create(
-        conn_id: String, handle: Handle, logger: util::Logger, client: TcpStream
+    fn create<S: 'static + WsStream>(
+        conn_id: String, handle: Handle, logger: util::Logger,
+        client: TcpStream, ws_writer: SharedWriter<SplitSink<Client<S>>>
     ) -> (RcEventEmitter<ConnectionEvents, ConnectionValues>, SharedWriter<TcpSink>, StreamThrottler) {
         let (a, b) = Self::get_endpoint_descriptors();
 
@@ -236,6 +286,11 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
         let (sink, stream) = client.framed(BytesCodec::new()).split();
         // SharedWriter for sending to remote
         let remote_writer = SharedWriter::new();
+        remote_writer.set_throttling_handler(TwsTcpWriteThrottlingHandler {
+            conn_id: conn_id.clone(),
+            ws_writer,
+            paused: false
+        });
 
         // Forward remote packets to client
         let stream_work = read_throttler.wrap_stream(stream).for_each(clone!(a, emitter, logger, conn_id; |p| {
@@ -274,8 +329,9 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
     fn get_writer(&self) -> &SharedWriter<TcpSink>;
     fn get_conn_id(&self) -> &str;
     fn get_logger(&self) -> &util::Logger;
-    fn get_read_throttler(&self) -> &StreamThrottler;
-    fn get_read_pause_counter(&self) -> &Cell<usize>;
+    fn get_read_throttler(&mut self) -> &mut StreamThrottler;
+    fn get_read_pause_counter(&self) -> usize;
+    fn set_read_pause_counter(&mut self, counter: usize);
 
     /*
      * Send a data buffer to remote via the SharedWriter
@@ -294,26 +350,26 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
     /*
      * Pause the reading part if it is not paused yet
      */
-    fn pause(&self) {
+    fn pause(&mut self) {
         let counter = self.get_read_pause_counter();
-        if counter.get() == 0 {
+        if counter == 0 {
             self.get_read_throttler().pause();
         }
-        counter.set(counter.get() + 1);
+        self.set_read_pause_counter(counter + 1);
     }
 
     /*
      * Resume the reading part if no one requires it
      * to be paused
      */
-    fn resume(&self) {
+    fn resume(&mut self) {
         let counter = self.get_read_pause_counter();
-        if counter.get() == 1 {
+        if counter == 1 {
             self.get_read_throttler().resume();
         }
 
-        if counter.get() > 0 {
-            counter.set(counter.get() - 1);
+        if counter > 0 {
+            self.set_read_pause_counter(counter - 1);
         }
     }
 }

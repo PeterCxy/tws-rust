@@ -12,7 +12,7 @@ use protocol::shared::{
     TwsServiceState, TwsService, TwsConnection,
     TcpSink, ConnectionEvents, ConnectionValues};
 use rand::{self, Rng};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -158,8 +158,8 @@ struct ClientSessionState {
 }
 
 impl TwsServiceState<ClientConnection> for ClientSessionState {
-    fn get_connections(&self) -> &HashMap<String, ClientConnection> {
-        &self.connections
+    fn get_connections(&mut self) -> &mut HashMap<String, ClientConnection> {
+        &mut self.connections
     }
 
     fn get_paused(&self) -> bool {
@@ -204,7 +204,8 @@ impl ClientSessionHandle {
             conn_id: conn_id.clone(),
             handle,
             logger: self.logger.clone(),
-            client
+            client,
+            ws_writer: self.writer.clone()
         });
 
         // Send CONNECT request to server.
@@ -406,7 +407,8 @@ struct PendingClientConnection {
     conn_id: String,
     handle: Handle,
     logger: util::Logger,
-    client: TcpStream
+    client: TcpStream,
+    ws_writer: SharedWriter<ServerSink>
 }
 
 impl PendingClientConnection {
@@ -414,7 +416,7 @@ impl PendingClientConnection {
      * Upgrade this connection to an actual ClientConnection
      */
     fn connect(self) -> ClientConnection {
-        ClientConnection::new(self.conn_id, self.logger, self.handle, self.client)
+        ClientConnection::new(self.conn_id, self.logger, self.handle, self.client, self.ws_writer)
     }
 }
 
@@ -427,7 +429,7 @@ struct ClientConnection {
     event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>,
     client_writer: SharedWriter<TcpSink>,
     read_throttler: StreamThrottler,
-    read_pause_counter: Cell<usize>
+    read_pause_counter: usize
 }
 
 impl ClientConnection {
@@ -435,8 +437,10 @@ impl ClientConnection {
      * Create the connection and start to forward traffic.
      * Do not use this if the connection should be pending.
      */
-    fn new(conn_id: String, logger: util::Logger, handle: Handle, client: TcpStream) -> ClientConnection {
-        let (emitter, writer, read_throttler) = Self::create(conn_id.clone(), handle, logger.clone(), client);
+    fn new(
+        conn_id: String, logger: util::Logger, handle: Handle, client: TcpStream, ws_writer: SharedWriter<ServerSink>
+    ) -> ClientConnection {
+        let (emitter, writer, read_throttler) = Self::create(conn_id.clone(), handle, logger.clone(), client, ws_writer);
 
         ClientConnection {
             conn_id,
@@ -444,7 +448,7 @@ impl ClientConnection {
             event_emitter: emitter,
             client_writer: writer,
             read_throttler,
-            read_pause_counter: Cell::new(0)
+            read_pause_counter: 0
         }
     }
 }
@@ -466,12 +470,16 @@ impl TwsConnection for ClientConnection {
         &self.client_writer
     }
 
-    fn get_read_throttler(&self) -> &StreamThrottler {
-        &self.read_throttler
+    fn get_read_throttler(&mut self) -> &mut StreamThrottler {
+        &mut self.read_throttler
     }
 
-    fn get_read_pause_counter(&self) -> &Cell<usize> {
-        &self.read_pause_counter
+    fn get_read_pause_counter(&self) -> usize {
+        self.read_pause_counter
+    }
+
+    fn set_read_pause_counter(&mut self, counter: usize) {
+        self.read_pause_counter = counter;
     }
 }
 

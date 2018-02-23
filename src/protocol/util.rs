@@ -188,12 +188,12 @@ pub trait ThrottlingHandler {
      * Pause the stream
      * do not poll until it is resumed
      */
-    fn pause(&self);
+    fn pause(&mut self);
 
     /*
      * Resume the stream
      */
-    fn resume(&self);
+    fn resume(&mut self);
 
     /*
      * Has the stream been paused?
@@ -240,11 +240,11 @@ impl StreamThrottler {
 }
 
 impl ThrottlingHandler for StreamThrottler {
-    fn pause(&self) {
+    fn pause(&mut self) {
         self.state.borrow_mut().paused = true;
     }
 
-    fn resume(&self) {
+    fn resume(&mut self) {
         let mut state = self.state.borrow_mut();
         state.paused = false;
         notify_task(&state.task);
@@ -353,7 +353,7 @@ impl<I: Debug, E> Stream for SharedStream<I, E> {
             let item = state.queue.remove(0);
 
             if state.queue.len() < QUEUE_MAX_LENGTH && state.throttling_handler.is_some() {
-                let h = state.throttling_handler.as_ref().unwrap();
+                let h = state.throttling_handler.as_mut().unwrap();
                 if h.is_paused() {
                     h.resume();
                 }
@@ -423,7 +423,7 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
             notify_task(&state.task);
 
             if state.queue.len() >= QUEUE_MAX_LENGTH && state.throttling_handler.is_some() {
-                let h = state.throttling_handler.as_ref().unwrap();
+                let h = state.throttling_handler.as_mut().unwrap();
                 if !h.is_paused() {
                     h.pause();
                 }

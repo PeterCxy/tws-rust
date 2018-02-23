@@ -14,7 +14,7 @@ use protocol::shared::{
 use protocol::util::{
     self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent,
     SharedWriter, StreamThrottler};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -119,8 +119,8 @@ struct ServerSessionState {
 }
 
 impl TwsServiceState<RemoteConnection> for ServerSessionState {
-    fn get_connections(&self) -> &HashMap<String, RemoteConnection> {
-        &self.remote_connections
+    fn get_connections(&mut self) -> &mut HashMap<String, RemoteConnection> {
+        &mut self.remote_connections
     }
 
     fn get_paused(&self) -> bool {
@@ -270,7 +270,10 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
 
         clone!(self, state, writer, logger);
         let conn_id_owned = String::from(conn_id);
-        let conn_work = RemoteConnection::connect(conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone())
+        let conn_work = RemoteConnection::connect(
+            conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone(), writer.clone()
+        );
+        let conn_work = conn_work
             .map(clone!(writer, logger, state, conn_id_owned; |conn| {
                 // Subscribe to remote events
                 // Remote => Client
@@ -345,7 +348,7 @@ struct RemoteConnection {
     remote_writer: SharedWriter<TcpSink>, // Writer of remote connection
     event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>,
     read_throttler: StreamThrottler,
-    read_pause_counter: Cell<usize>
+    read_pause_counter: usize
 }
 
 impl RemoteConnection {
@@ -353,7 +356,8 @@ impl RemoteConnection {
         conn_id: &str,
         logger: util::Logger,
         addr: &SocketAddr,
-        handle: Handle
+        handle: Handle,
+        ws_writer: SharedWriter<ClientSink>
     ) -> BoxFuture<'a, RemoteConnection> {
         let conn_id_owned = String::from(conn_id);
 
@@ -361,7 +365,7 @@ impl RemoteConnection {
             .chain_err(|| "Connection failed")
             .map(move |s| {
                 let (emitter, remote_writer, read_throttler) =
-                    Self::create(conn_id_owned.clone(), handle, logger.clone(), s);
+                    Self::create(conn_id_owned.clone(), handle, logger.clone(), s, ws_writer);
 
                 // Create RemoteConnection object
                 // To be used in ServerSession to forward data
@@ -371,7 +375,7 @@ impl RemoteConnection {
                     remote_writer,
                     event_emitter: emitter,
                     read_throttler,
-                    read_pause_counter: Cell::new(0)
+                    read_pause_counter: 0
                 }
             })
             ._box()
@@ -391,12 +395,16 @@ impl TwsConnection for RemoteConnection {
         &self.remote_writer
     }
 
-    fn get_read_throttler(&self) -> &StreamThrottler {
-        &self.read_throttler
+    fn get_read_throttler(&mut self) -> &mut StreamThrottler {
+        &mut self.read_throttler
     }
 
-    fn get_read_pause_counter(&self) -> &Cell<usize> {
-        &self.read_pause_counter
+    fn get_read_pause_counter(&self) -> usize {
+        self.read_pause_counter
+    }
+
+    fn set_read_pause_counter(&mut self, counter: usize) {
+        self.read_pause_counter = counter;
     }
 }
 
