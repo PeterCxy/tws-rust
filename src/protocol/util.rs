@@ -86,7 +86,7 @@ macro_rules! unwrap {
         }
         #[allow(unused_mut)]
         let mut $r = _result.unwrap();
-};
+    };
 }
 
 /*
