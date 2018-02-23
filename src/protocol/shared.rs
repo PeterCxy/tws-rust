@@ -116,7 +116,7 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
         // The main task
         // 3 combined streams. Will finish once one of them finish.
         // i.e. when the connection closes, everything here should finish.
-        stream
+        util::AlternatingStream::new(stream)
             .map_err(clone!(logger; |e| {
                 do_log!(logger, ERROR, "{:?}", e);
                 "session failed.".into()
@@ -293,7 +293,7 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
         });
 
         // Forward remote packets to client
-        let stream_work = read_throttler.wrap_stream(stream).for_each(clone!(emitter; |p| {
+        let stream_work = read_throttler.wrap_stream(util::AlternatingStream::new(stream)).for_each(clone!(emitter; |p| {
             emitter.borrow().emit(ConnectionEvents::Data, ConnectionValues::Packet(p));
             Ok(())
         })).map_err(clone!(a, b, logger, conn_id; |e| {

@@ -293,6 +293,56 @@ impl<S: Stream> Stream for ThrottledStream<S> {
 }
 
 /*
+ * A wrapper of Stream that makes the
+ * original stream alternate
+ * i.e. if the stream returns Ready,
+ *      then the next time of `poll()`
+ *      will always return NotReady.
+ * This simulates a round-robin
+ * pattern between multiple streams
+ * that will be present in this program,
+ * which avoids making all the
+ * streams stalled because of one super
+ * fast stream, and also (generally)
+ * fairly distributes the bandwidth.
+ */
+pub struct AlternatingStream<S: Stream> {
+    stream: S,
+    flag: bool
+}
+
+impl<S: Stream> AlternatingStream<S> {
+    pub fn new(stream: S) -> AlternatingStream<S> {
+        AlternatingStream {
+            stream,
+            flag: false
+        }
+    }
+}
+
+impl<S: Stream> Stream for AlternatingStream<S> {
+    type Item = S::Item;
+    type Error = S::Error;
+
+    fn poll(&mut self) -> ::std::result::Result<Async<Option<S::Item>>, S::Error> {
+        if self.flag {
+            // Do not poll the original stream if the last poll was successful.
+            self.flag = false;
+            // Notify the task to poll this stream on the next tick.
+            task::current().notify();
+            return Ok(Async::NotReady);
+        } else {
+            let ret = self.stream.poll();
+            if let Ok(Async::Ready(_)) = ret {
+                // Do not poll after a successful poll.
+                self.flag = true;
+            }
+            return ret;
+        }
+    }
+}
+
+/*
  * Maximum length of the queue in SharedWriter before calling pause()
  */
 const QUEUE_MAX_LENGTH: usize = 4;
@@ -421,6 +471,7 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
         if !state.finished {
             state.queue.push(item);
             notify_task(&state.task);
+            //println!("new len = {}", state.queue.len());
 
             if state.queue.len() >= QUEUE_MAX_LENGTH && state.throttling_handler.is_some() {
                 let h = state.throttling_handler.as_mut().unwrap();
