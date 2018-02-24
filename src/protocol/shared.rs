@@ -6,9 +6,7 @@ use errors::*;
 use futures::{Future, Stream};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::util::{
-    self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter,
-    RcEventEmitter, EventSource, StreamThrottler, ThrottlingHandler};
+use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter, StreamThrottler, ThrottlingHandler};
 use websocket::OwnedMessage;
 use websocket::async::Client;
 use websocket::stream::async::Stream as WsStream;
@@ -212,21 +210,6 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
     fn on_data(&self, _conn_id: &str, _data: &[u8]) {}
 }
 
-/*
- * Events and values that may be emitted by a TCP connection
- */
-#[derive(PartialEq, Eq)]
-pub enum ConnectionEvents {
-    Data,
-    Close
-}
-
-#[derive(Debug)]
-pub enum ConnectionValues {
-    Nothing,
-    Packet(BytesMut)
-}
-
 // Splitted Sink for Tcp byte streams
 pub type TcpSink = SplitSink<Framed<TcpStream, BytesCodec>>;
 
@@ -262,26 +245,37 @@ impl<S: 'static + WsStream> ThrottlingHandler for TwsTcpWriteThrottlingHandler<S
 }
 
 /*
+ * Handler of data and close events emitted by
+ * TCP connections transmitted on TWS
+ * responsible for forwarding these events to remote
+ */
+pub trait TwsConnectionHandler: 'static + Sized {
+    fn on_data(&self, _d: BytesMut);
+    fn on_close(&self);
+}
+
+/*
  * Shared logic for TCP connection
  *  1. from server to remote
  *  2. from client to local (which is TWS client)
  */
-pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, ConnectionValues> {
+pub trait TwsConnection: 'static + Sized {
     fn get_endpoint_descriptors() -> (&'static str, &'static str) {
         ("remote", "client")
     }
     
     /*
      * Static method to bootstrap the connection
-     * set up the event emitter and writer
+     * set up the reading and writing part of the connection
      */
-    fn create<S: 'static + WsStream>(
+    fn create<S: 'static + WsStream, H: TwsConnectionHandler>(
         conn_id: String, handle: Handle, logger: util::Logger,
-        client: TcpStream, ws_writer: SharedWriter<SplitSink<Client<S>>>
-    ) -> (RcEventEmitter<ConnectionEvents, ConnectionValues>, SharedWriter<TcpSink>, StreamThrottler) {
+        client: TcpStream, ws_writer: SharedWriter<SplitSink<Client<S>>>,
+        conn_handler: H
+    ) -> (SharedWriter<TcpSink>, StreamThrottler) {
         let (a, b) = Self::get_endpoint_descriptors();
+        let conn_handler = Rc::new(conn_handler);
 
-        let emitter = util::new_emitter();
         let read_throttler = StreamThrottler::new();
         let (sink, stream) = client.framed(BytesCodec::new()).split();
         // SharedWriter for sending to remote
@@ -293,8 +287,8 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
         });
 
         // Forward remote packets to client
-        let stream_work = read_throttler.wrap_stream(util::AlternatingStream::new(stream)).for_each(clone!(emitter; |p| {
-            emitter.borrow().emit(ConnectionEvents::Data, ConnectionValues::Packet(p));
+        let stream_work = read_throttler.wrap_stream(util::AlternatingStream::new(stream)).for_each(clone!(conn_handler; |p| {
+            conn_handler.on_data(p);
             Ok(())
         })).map_err(clone!(a, b, logger, conn_id; |e| {
             do_log!(logger, ERROR, "[{}] {} => {} error {:?}", conn_id, a, b, e);
@@ -314,15 +308,15 @@ pub trait TwsConnection: 'static + Sized + EventSource<ConnectionEvents, Connect
         // Once one of them is finished, just tear down the whole
         // channel.
         handle.spawn(stream_work.select(sink_work)
-            .then(clone!(emitter, logger, conn_id; |_| {
+            .then(clone!(logger, conn_id, conn_handler; |_| {
                 // Clean-up job upon finishing
                 // No matter if there is any error.
                 do_log!(logger, INFO, "[{}] Channel closing.", conn_id);
-                emitter.borrow().emit(ConnectionEvents::Close, ConnectionValues::Nothing);
+                conn_handler.on_close();
                 Ok(())
             })));
 
-        (emitter, remote_writer, read_throttler)
+        (remote_writer, read_throttler)
     }
 
     fn get_writer(&self) -> &SharedWriter<TcpSink>;

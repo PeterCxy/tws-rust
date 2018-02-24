@@ -4,17 +4,13 @@
  * Refer to `protocol.rs` for detailed description
  * of the protocol.
  */
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::Stream;
 use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::shared::{
-    TwsServiceState, TwsService, TwsConnection,
-    TcpSink, ConnectionEvents, ConnectionValues};
-use protocol::util::{
-    self, BoxFuture, Boxable, RcEventEmitter, EventSource, FutureChainErr, HeartbeatAgent,
-    SharedWriter, StreamThrottler};
+use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink};
+use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, StreamThrottler};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -272,25 +268,15 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
         clone!(self, state, writer, logger);
         let conn_id_owned = String::from(conn_id);
         let conn_work = RemoteConnection::connect(
-            conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone(), writer.clone()
+            conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone(), writer.clone(),
+            RemoteConnectionHandler {
+                conn_id: conn_id_owned.clone(),
+                ws_writer: writer.clone(),
+                state: state.clone()
+            }
         );
         let conn_work = conn_work
-            .map(clone!(writer, logger, state, conn_id_owned; |conn| {
-                // Subscribe to remote events
-                // Remote => Client
-                conn.subscribe(ConnectionEvents::Data, clone!(writer, conn_id_owned; |data| {
-                    unwrap!(&ConnectionValues::Packet(ref data), data, ());
-
-                    // Forward data to client.
-                    writer.feed(OwnedMessage::Binary(proto::data_build(&conn_id_owned, data)))
-                }));
-
-                // Remote connection closed
-                conn.subscribe(ConnectionEvents::Close, clone!(writer, state, conn_id_owned; |_| {
-                    // Call shared clean-up code for this.
-                    Self::close_conn(&state, &writer, &conn_id_owned);
-                }));
-
+            .map(clone!(writer, logger, conn_id_owned; |conn| {
                 // Notify the client that this connection is now up.
                 do_log!(logger, INFO, "[{}] Connection estabilished.", conn_id_owned);
                 writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, proto::ConnectionState::Ok)));
@@ -337,6 +323,25 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
 }
 
 /*
+ * Forward TCP stream from remote to client
+ */
+struct RemoteConnectionHandler {
+    conn_id: String,
+    ws_writer: SharedWriter<ClientSink>,
+    state: Rc<RefCell<ServerSessionState>>
+}
+
+impl TwsConnectionHandler for RemoteConnectionHandler {
+    fn on_data(&self, data: BytesMut) {
+        self.ws_writer.feed(OwnedMessage::Binary(proto::data_build(&self.conn_id, &data)));
+    }
+
+    fn on_close(&self) {
+        ServerSession::close_conn(&self.state, &self.ws_writer, &self.conn_id);
+    }
+}
+
+/*
  * A connection to remote server
  * corresponding to a logical connection
  * inside one WebSocket session.
@@ -348,7 +353,6 @@ struct RemoteConnection {
     conn_id: String,
     logger: util::Logger,
     remote_writer: SharedWriter<TcpSink>, // Writer of remote connection
-    event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>,
     read_throttler: StreamThrottler,
     read_pause_counter: usize
 }
@@ -359,15 +363,16 @@ impl RemoteConnection {
         logger: util::Logger,
         addr: &SocketAddr,
         handle: Handle,
-        ws_writer: SharedWriter<ClientSink>
+        ws_writer: SharedWriter<ClientSink>,
+        conn_handler: RemoteConnectionHandler
     ) -> BoxFuture<'a, RemoteConnection> {
         let conn_id_owned = String::from(conn_id);
 
         TcpStream::connect(addr, &handle.clone())
             .chain_err(|| "Connection failed")
             .map(move |s| {
-                let (emitter, remote_writer, read_throttler) =
-                    Self::create(conn_id_owned.clone(), handle, logger.clone(), s, ws_writer);
+                let (remote_writer, read_throttler) =
+                    Self::create(conn_id_owned.clone(), handle, logger.clone(), s, ws_writer, conn_handler);
 
                 // Create RemoteConnection object
                 // To be used in ServerSession to forward data
@@ -375,7 +380,6 @@ impl RemoteConnection {
                     conn_id: conn_id_owned,
                     logger,
                     remote_writer,
-                    event_emitter: emitter,
                     read_throttler,
                     read_pause_counter: 0
                 }
@@ -407,12 +411,6 @@ impl TwsConnection for RemoteConnection {
 
     fn set_read_pause_counter(&mut self, counter: usize) {
         self.read_pause_counter = counter;
-    }
-}
-
-impl EventSource<ConnectionEvents, ConnectionValues> for RemoteConnection {
-    fn get_event_emitter(&self) -> RcEventEmitter<ConnectionEvents, ConnectionValues> {
-        self.event_emitter.clone()
     }
 }
 

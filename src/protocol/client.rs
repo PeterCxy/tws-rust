@@ -4,14 +4,12 @@
  * Refer to `protocol.rs` for detailed description
  * of the protocol.
  */
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::future::{Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
 use protocol::protocol as proto;
-use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, RcEventEmitter, EventSource, StreamThrottler};
-use protocol::shared::{
-    TwsServiceState, TwsService, TwsConnection,
-    TcpSink, ConnectionEvents, ConnectionValues};
+use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, StreamThrottler};
+use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink};
 use rand::{self, Rng};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -206,7 +204,8 @@ impl ClientSessionHandle {
             handle,
             logger: self.logger.clone(),
             client,
-            ws_writer: self.writer.clone()
+            ws_writer: self.writer.clone(),
+            state: self.state.clone()
         });
 
         // Send CONNECT request to server.
@@ -307,23 +306,11 @@ impl ClientSession {
      *      up to the caller to make sure that conn_id is valid.
      */
     fn activate_connection(&self, conn_id: &str) {
-        clone!(self, writer, state);
         let conn = self.state.borrow_mut().pending_connections.remove(conn_id).unwrap().connect();
         let conn_id = String::from(conn_id);
 
-        // Forward client packet to server
-        conn.subscribe(ConnectionEvents::Data, clone!(conn_id, writer; |data| {
-            unwrap!(&ConnectionValues::Packet(ref data), data, ());
-            writer.feed(OwnedMessage::Binary(proto::data_build(&conn_id, data)));
-        }));
-
-        // Listen to close event
-        conn.subscribe(ConnectionEvents::Close, clone!(conn_id, writer; |_| {
-            ClientSession::close_conn(&state, &writer, &conn_id);
-        }));
-
         // Add the connection to active connection list
-        self.state.borrow_mut().connections.insert(String::from(conn.get_conn_id()), conn);
+        self.state.borrow_mut().connections.insert(conn_id, conn);
     }
 
     /*
@@ -400,6 +387,25 @@ impl TwsService<ClientConnection, ClientSessionState, Box<WsStream + Send>> for 
 }
 
 /*
+ * Forward TCP stream from client to remote
+ */
+struct ClientConnectionHandler {
+    conn_id: String,
+    ws_writer: SharedWriter<ServerSink>,
+    state: Rc<RefCell<ClientSessionState>>
+}
+
+impl TwsConnectionHandler for ClientConnectionHandler {
+    fn on_data(&self, data: BytesMut) {
+        self.ws_writer.feed(OwnedMessage::Binary(proto::data_build(&self.conn_id, &data)));
+    }
+
+    fn on_close(&self) {
+        ClientSession::close_conn(&self.state, &self.ws_writer, &self.conn_id);
+    }
+}
+
+/*
  * A ClientConnection that is still pending
  * waiting for the server to connect to remote.
  * 
@@ -411,7 +417,8 @@ struct PendingClientConnection {
     handle: Handle,
     logger: util::Logger,
     client: TcpStream,
-    ws_writer: SharedWriter<ServerSink>
+    ws_writer: SharedWriter<ServerSink>,
+    state: Rc<RefCell<ClientSessionState>>
 }
 
 impl PendingClientConnection {
@@ -419,7 +426,14 @@ impl PendingClientConnection {
      * Upgrade this connection to an actual ClientConnection
      */
     fn connect(self) -> ClientConnection {
-        ClientConnection::new(self.conn_id, self.logger, self.handle, self.client, self.ws_writer)
+        ClientConnection::new(
+            self.conn_id.clone(), self.logger, self.handle, self.client, self.ws_writer.clone(),
+            ClientConnectionHandler {
+                conn_id: self.conn_id,
+                ws_writer: self.ws_writer,
+                state: self.state
+            }
+        )
     }
 }
 
@@ -429,7 +443,6 @@ impl PendingClientConnection {
 struct ClientConnection {
     conn_id: String,
     logger: util::Logger,
-    event_emitter: RcEventEmitter<ConnectionEvents, ConnectionValues>,
     client_writer: SharedWriter<TcpSink>,
     read_throttler: StreamThrottler,
     read_pause_counter: usize
@@ -441,14 +454,15 @@ impl ClientConnection {
      * Do not use this if the connection should be pending.
      */
     fn new(
-        conn_id: String, logger: util::Logger, handle: Handle, client: TcpStream, ws_writer: SharedWriter<ServerSink>
+        conn_id: String, logger: util::Logger, handle: Handle, client: TcpStream,
+        ws_writer: SharedWriter<ServerSink>, conn_handler: ClientConnectionHandler
     ) -> ClientConnection {
-        let (emitter, writer, read_throttler) = Self::create(conn_id.clone(), handle, logger.clone(), client, ws_writer);
+        let (writer, read_throttler) =
+            Self::create(conn_id.clone(), handle, logger.clone(), client, ws_writer, conn_handler);
 
         ClientConnection {
             conn_id,
             logger,
-            event_emitter: emitter,
             client_writer: writer,
             read_throttler,
             read_pause_counter: 0
@@ -483,12 +497,6 @@ impl TwsConnection for ClientConnection {
 
     fn set_read_pause_counter(&mut self, counter: usize) {
         self.read_pause_counter = counter;
-    }
-}
-
-impl EventSource<ConnectionEvents, ConnectionValues> for ClientConnection {
-    fn get_event_emitter(&self) -> RcEventEmitter<ConnectionEvents, ConnectionValues> {
-        self.event_emitter.clone()
     }
 }
 

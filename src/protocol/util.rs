@@ -70,25 +70,6 @@ macro_rules! clone {
     );
 }
 
-macro_rules! unwrap {
-    ($t:pat, $r:ident, $d:expr) => {
-        let _result = {
-            match $r {
-                $t => Some($r),
-                x => {
-                    println!("Type mismatch: expected {}, found {:?}", stringify!($t), x);
-                    None
-                }
-            }
-        };
-        if let None = _result {
-            return $d;
-        }
-        #[allow(unused_mut)]
-        let mut $r = _result.unwrap();
-    };
-}
-
 /*
  * Modified version of SocketAddr stringifier
  * Omits brackets for IPv6 addresses.
@@ -540,57 +521,6 @@ impl<S: 'static + Sink> Clone for SharedWriter<S> where S::SinkItem: Debug {
         SharedWriter {
             state: self.state.clone()
         }
-    }
-}
-
-/*
- * An EventEmitter model similar to that
- * in node.js. It is an object that can
- * be subscribed to and can accept
- * emitted events from outside.
- */
-pub struct EventEmitter<T, U> where T: Eq {
-    subscribers: Vec<(T, Box<Fn(&U)>)>
-}
-
-impl<T, U> EventEmitter<T, U> where T: Eq {
-    pub fn new() -> EventEmitter<T, U> {
-        EventEmitter {
-            subscribers: Vec::new()
-        }
-    }
-
-    pub fn subscribe<F>(&mut self, ev_type: T, f: F) where F: 'static + Fn(&U) {
-        self.subscribers.push((ev_type, Box::new(f)));
-    }
-
-    pub fn emit(&self, ev_type: T, ev: U) {
-        for &(ref t, ref f) in &self.subscribers {
-            if *t == ev_type {
-                f(&ev)
-            }
-        }
-    }
-}
-
-pub type RcEventEmitter<T, U> = Rc<RefCell<EventEmitter<T, U>>>;
-
-pub fn new_emitter<T: Eq, U>() -> RcEventEmitter<T, U> {
-    Rc::new(RefCell::new(EventEmitter::new()))
-}
-
-/*
- * Model of objects that generate events
- * and emit them using an EventEmitter.
- * This needs Rc because the events might
- * be emitted from multiple spots.
- */
-pub trait EventSource<T, U> where T: Eq {
-    fn get_event_emitter(&self) -> RcEventEmitter<T, U>;
-
-    fn subscribe<F>(&self, ev_type: T, f: F) where F: 'static + Fn(&U) {
-        let emitter = self.get_event_emitter();
-        emitter.borrow_mut().subscribe(ev_type, f);
     }
 }
 
