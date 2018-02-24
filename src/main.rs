@@ -65,7 +65,8 @@ fn test_client() {
         remote: "127.0.0.1:5201".parse().unwrap(),
         server: String::from("ws://127.0.0.1:23356/"),
         passwd: String::from("testpassword"),
-        timeout: 5000
+        timeout: 5000,
+        retry_timeout: 500
     });
     client.on_log(|l, m| {
         // TODO: Extract common logging logic.

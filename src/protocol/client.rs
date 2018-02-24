@@ -15,9 +15,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::time::Duration;
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::Handle;
 use tokio_io::codec::Framed;
+use tokio_timer::Timer;
 use websocket::{ClientBuilder, OwnedMessage};
 use websocket::async::MessageCodec;
 use websocket::stream::async::Stream as WsStream;
@@ -29,7 +31,8 @@ pub struct TwsClientOption {
     pub remote: SocketAddr,
     pub server: String,
     pub passwd: String,
-    pub timeout: u64
+    pub timeout: u64,
+    pub retry_timeout: u64
 }
 
 /*
@@ -118,9 +121,10 @@ impl TwsClient {
                 // Get rid of the handle first.
                 sessions.borrow_mut()[id] = None;
 
-                // Restart this session
-                // TODO: Retry after a certain timeout.
-                Self::run_session(sessions, handle, logger, option, id)
+                // Restart this session (wait for some timeout)
+                // TODO: Exponential backoff
+                Timer::default().sleep(Duration::from_millis(option.retry_timeout))
+                    .then(move |_| Self::run_session(sessions, handle, logger, option, id))
             }))
             ._box()
     }
