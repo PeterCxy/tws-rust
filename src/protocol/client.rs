@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::Handle;
 use tokio_io::codec::Framed;
@@ -204,6 +204,7 @@ impl ClientSessionHandle {
     fn add_pending_connection(&self, client: TcpStream, handle: Handle) -> String {
         let conn_id = util::rand_str(6);
         self.state.borrow_mut().pending_connections.insert(conn_id.clone(), PendingClientConnection {
+            created: Instant::now(),
             conn_id: conn_id.clone(),
             handle,
             logger: self.logger.clone(),
@@ -297,7 +298,14 @@ impl ClientSession {
                         Timer::default().interval(Duration::from_millis(option.timeout))
                             .for_each(clone!(state; |_| {
                                 do_log!(logger, DEBUG, "Periodic cleanup of dead pending connections");
-                                state.borrow_mut().pending_connections.clear();
+                                let to_remove: Vec<_> = state.borrow_mut().pending_connections.iter()
+                                    .filter(|&(_, conn)| conn.created.elapsed() > Duration::from_millis(option.timeout))
+                                    .map(|(id, _)| id.clone())
+                                    .collect();
+                                for id in to_remove {
+                                    do_log!(logger, INFO, "[{}] timed out", id);
+                                    state.borrow_mut().pending_connections.remove(&id);
+                                }
                                 Ok(())
                             }))
                     )
@@ -426,6 +434,7 @@ impl TwsConnectionHandler for ClientConnectionHandler {
  * ClientConnection.
  */
 struct PendingClientConnection {
+    created: Instant,
     conn_id: String,
     handle: Handle,
     logger: util::Logger,
