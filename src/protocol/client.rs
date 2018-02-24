@@ -383,10 +383,11 @@ impl TwsService<ClientConnection, ClientSessionState, Box<WsStream + Send>> for 
         }
     }
 
-    fn on_connect_state(&self, conn_id: &str, state: proto::ConnectionState) {
-        if state.is_closed() {
+    fn on_connect_state(&self, conn_id: &str, conn_state: proto::ConnectionState) {
+        self._on_connect_state(conn_id, &conn_state);
+        if conn_state.is_closed() {
             Self::close_conn(&self.state, &self.writer, conn_id);
-        } else if state.is_ok() {
+        } else if conn_state.is_ok() {
             if self.state.borrow().pending_connections.contains_key(conn_id) {
                 // If there is a corresponding pending connection, activate it.
                 self.activate_connection(conn_id);

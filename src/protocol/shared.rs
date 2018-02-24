@@ -174,7 +174,7 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
             // Implementations can override these to control event handling.
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
             proto::Packet::Connect(conn_id) => self.on_connect(conn_id),
-            proto::Packet::ConnectionState((conn_id, state)) => self._on_connect_state(conn_id, state),
+            proto::Packet::ConnectionState((conn_id, state)) => self.on_connect_state(conn_id, state),
             proto::Packet::Data((conn_id, data)) => self.on_data(conn_id, data),
 
             // Process unknown packets
@@ -189,7 +189,7 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
      * Pause or resume the `read` part of the corresponding connection
      * on request.
      */
-    fn _on_connect_state(&self, conn_id: &str, conn_state: proto::ConnectionState) {
+    fn _on_connect_state(&self, conn_id: &str, conn_state: &proto::ConnectionState) {
         if conn_state.is_pause() {
             self.get_state().borrow_mut().get_connections().get_mut(conn_id)
                 .map_or((), |c| c.pause());
@@ -197,7 +197,6 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
             self.get_state().borrow_mut().get_connections().get_mut(conn_id)
                 .map_or((), |c| c.resume());
         }
-        self.on_connect_state(conn_id, conn_state);
     }
 
     /*
@@ -206,7 +205,10 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
     fn on_unknown(&self) {}
     fn on_handshake(&self, _addr: SocketAddr) {}
     fn on_connect(&self, _conn_id: &str) {}
-    fn on_connect_state(&self, _conn_id: &str, _ok: proto::ConnectionState) {}
+    fn on_connect_state(&self, _conn_id: &str, _state: proto::ConnectionState) {
+        // If this method is overridden, implementations must call self._on_connect_state()
+        self._on_connect_state(_conn_id, &_state);
+    }
     fn on_data(&self, _conn_id: &str, _data: &[u8]) {}
 }
 

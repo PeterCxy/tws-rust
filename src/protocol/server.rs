@@ -300,10 +300,11 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
         self.handle.spawn(conn_work);
     }
 
-    fn on_connect_state(&self, conn_id: &str, state: proto::ConnectionState) {
+    fn on_connect_state(&self, conn_id: &str, conn_state: proto::ConnectionState) {
         if !self.check_handshaked() { return; }
+        self._on_connect_state(conn_id, &conn_state);
 
-        if state.is_closed() {
+        if conn_state.is_closed() {
             // Call shared clean-up code to clean up the logical connection.
             Self::close_conn(&self.state, &self.writer, conn_id);
         }
