@@ -11,10 +11,6 @@
  * In this submodule, code is only concerned with basic
  * building / parsing packets.
  * 
- * TODO: The protocol should simulate backpressure
- *       allowing clients to instruct the server
- *       to pause a certain connection when buffer
- *       grows too much.
  * TODO: Better documentation
  * TODO: Randomize packet length
  *      or try to add random meaningless
