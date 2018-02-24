@@ -470,7 +470,7 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
         let mut state = self.state.borrow_mut();
         if !state.finished {
             state.finished = true;
-            // TODO: Clear buffer after closing.
+            state.queue.clear();
             notify_task(&state.task);
         }
     }
