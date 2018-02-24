@@ -294,6 +294,7 @@ impl ClientSession {
                         let mut _state = state.borrow_mut();
                         _state.connected = false;
                         _state.connections.clear();
+                        _state.pending_connections.clear();
                         Ok(())
                     })
             })
