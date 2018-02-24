@@ -262,6 +262,7 @@ pub trait TwsConnectionHandler: 'static + Sized {
  *  2. from client to local (which is TWS client)
  */
 pub trait TwsConnection: 'static + Sized {
+    #[inline(always)]
     fn get_endpoint_descriptors() -> (&'static str, &'static str) {
         ("remote", "client")
     }

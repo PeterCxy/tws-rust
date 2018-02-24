@@ -116,14 +116,17 @@ struct ServerSessionState {
 }
 
 impl TwsServiceState<RemoteConnection> for ServerSessionState {
+    #[inline(always)]
     fn get_connections(&mut self) -> &mut HashMap<String, RemoteConnection> {
         &mut self.remote_connections
     }
 
+    #[inline(always)]
     fn get_paused(&self) -> bool {
         self.paused
     }
 
+    #[inline(always)]
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
@@ -215,22 +218,27 @@ impl ServerSession {
 }
 
 impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSession {
+    #[inline(always)]
     fn get_passwd(&self) -> &str {
         &self.option.passwd
     }
 
+    #[inline(always)]
     fn get_writer(&self) -> &SharedWriter<ClientSink> {
         &self.writer
     }
 
+    #[inline(always)]
     fn get_heartbeat_agent(&self) -> &HeartbeatAgent<ClientSink> {
         &self.heartbeat_agent
     }
 
+    #[inline(always)]
     fn get_logger(&self) -> &util::Logger {
         &self.logger
     }
 
+    #[inline(always)]
     fn get_state(&self) -> &Rc<RefCell<ServerSessionState>> {
         &self.state
     }
@@ -390,26 +398,32 @@ impl RemoteConnection {
 }
 
 impl TwsConnection for RemoteConnection {
+    #[inline(always)]
     fn get_logger(&self) -> &util::Logger {
         &self.logger
     }
 
+    #[inline(always)]
     fn get_conn_id(&self) -> &str {
         &self.conn_id
     }
 
+    #[inline(always)]
     fn get_writer(&self) -> &SharedWriter<TcpSink> {
         &self.remote_writer
     }
 
+    #[inline(always)]
     fn get_read_throttler(&mut self) -> &mut StreamThrottler {
         &mut self.read_throttler
     }
 
+    #[inline(always)]
     fn get_read_pause_counter(&self) -> usize {
         self.read_pause_counter
     }
 
+    #[inline(always)]
     fn set_read_pause_counter(&mut self, counter: usize) {
         self.read_pause_counter = counter;
     }

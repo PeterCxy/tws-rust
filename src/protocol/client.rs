@@ -161,14 +161,17 @@ struct ClientSessionState {
 }
 
 impl TwsServiceState<ClientConnection> for ClientSessionState {
+    #[inline(always)]
     fn get_connections(&mut self) -> &mut HashMap<String, ClientConnection> {
         &mut self.connections
     }
 
+    #[inline(always)]
     fn get_paused(&self) -> bool {
         self.paused
     }
 
+    #[inline(always)]
     fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
@@ -353,22 +356,27 @@ impl ClientSession {
 }
 
 impl TwsService<ClientConnection, ClientSessionState, Box<WsStream + Send>> for ClientSession {
+    #[inline(always)]
     fn get_passwd(&self) -> &str {
         &self.option.passwd
     }
 
+    #[inline(always)]
     fn get_logger(&self) -> &util::Logger {
         &self.logger
     }
 
+    #[inline(always)]
     fn get_writer(&self) -> &SharedWriter<ServerSink> {
         &self.writer
     }
 
+    #[inline(always)]
     fn get_heartbeat_agent(&self) -> &HeartbeatAgent<ServerSink> {
         &self.heartbeat_agent
     }
 
+    #[inline(always)]
     fn get_state(&self) -> &Rc<RefCell<ClientSessionState>> {
         &self.state
     }
@@ -494,30 +502,37 @@ impl ClientConnection {
 }
 
 impl TwsConnection for ClientConnection {
+    #[inline(always)]
     fn get_endpoint_descriptors() -> (&'static str, &'static str) {
         ("client", "server")
     }
 
+    #[inline(always)]
     fn get_logger(&self) -> &util::Logger {
         &self.logger
     }
 
+    #[inline(always)]
     fn get_conn_id(&self) -> &str {
         &self.conn_id
     }
 
+    #[inline(always)]
     fn get_writer(&self) -> &SharedWriter<TcpSink> {
         &self.client_writer
     }
 
+    #[inline(always)]
     fn get_read_throttler(&mut self) -> &mut StreamThrottler {
         &mut self.read_throttler
     }
 
+    #[inline(always)]
     fn get_read_pause_counter(&self) -> usize {
         self.read_pause_counter
     }
 
+    #[inline(always)]
     fn set_read_pause_counter(&mut self, counter: usize) {
         self.read_pause_counter = counter;
     }
