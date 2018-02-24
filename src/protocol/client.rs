@@ -285,16 +285,24 @@ impl ClientSession {
                     .chain_err(|| "Connect failure")
             })
             .and_then(move |(client, _headers)| {
-                clone!(self, state);
+                clone!(self, state, option, logger);
 
                 // Send handshake before anything happens
-                self.writer.feed(OwnedMessage::Text(proto::handshake_build(&self.option.passwd, self.option.remote.clone()).unwrap()));
+                self.writer.feed(OwnedMessage::Text(proto::handshake_build(&option.passwd, option.remote.clone()).unwrap()));
 
                 // Spin up the service
-                // TODO: Add a periodic job to clear the pending connection list.
                 self.run_service(client)
+                    .select2(
+                        // Periodically remove all pending connections.
+                        Timer::default().interval(Duration::from_millis(option.timeout))
+                            .for_each(clone!(state; |_| {
+                                do_log!(logger, DEBUG, "Periodic cleanup of dead pending connections");
+                                state.borrow_mut().pending_connections.clear();
+                                Ok(())
+                            }))
+                    )
                     .then(move |_| {
-                        // TODO: Cleanup job
+                        // Cleanup job
                         let mut _state = state.borrow_mut();
                         _state.connected = false;
                         _state.connections.clear();
