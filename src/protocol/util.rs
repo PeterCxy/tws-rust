@@ -420,7 +420,7 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
         SharedWriter {
             state: Rc::new(RefCell::new(SharedStreamState {
                 marker: PhantomData,
-                queue: Vec::new(),
+                queue: Vec::with_capacity(QUEUE_MAX_LENGTH * 2),
                 finished: false,
                 task: None,
                 throttling_handler: None
