@@ -199,7 +199,7 @@ impl ServerSession {
             // Treat as authentication failure if we receive anything
             // before handshake.
             do_log!(self.logger, WARNING, "Authentication / Protocol failure. Client: {}", state.client.unwrap());
-            self.writer.feed(OwnedMessage::Close(None));
+            self.writer.close();
         }
         state.handshaked
     }

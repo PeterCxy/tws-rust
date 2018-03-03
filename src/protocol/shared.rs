@@ -160,7 +160,7 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
 
             // Notify the heartbeat agent that a pong is received.
             OwnedMessage::Pong(_) => self.get_heartbeat_agent().set_heartbeat_received(),
-            _ => ()
+            OwnedMessage::Close(_) => self.get_writer().close()
         };
     }
 
