@@ -42,6 +42,7 @@ fn main() {
     let mut core = Core::new().unwrap();
 
     // Load cli argument definitions
+    // TODO: Support appending options from config file
     let cli_def = load_yaml!("cli.yaml");
     let mut app = App::from_yaml(cli_def);
     let matches = app.clone().get_matches();
@@ -74,6 +75,7 @@ fn client(handle: Handle, matches: &ArgMatches) -> BoxFuture<'static, ()> {
     client.run()
 }
 
+// TODO: Support specifying log level from cli
 fn logger(level: LogLevel, message: &str) {
     println!("{:?}: {}", level, message);
 }
