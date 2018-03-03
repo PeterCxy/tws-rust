@@ -1,5 +1,7 @@
 extern crate base64;
 extern crate bytes;
+#[macro_use]
+extern crate clap;
 extern crate futures;
 extern crate hmac;
 extern crate rand;
@@ -14,6 +16,7 @@ extern crate websocket;
 extern crate error_chain;
 
 mod protocol;
+mod parser;
 
 mod errors {
     error_chain! {
@@ -28,49 +31,49 @@ mod errors {
     }
 }
 
-use protocol::server::{TwsServerOption, TwsServer};
-use protocol::client::{TwsClientOption, TwsClient};
-use std::env;
-use tokio_core::reactor::Core;
+use clap::{App, ArgMatches};
+use protocol::server::TwsServer;
+use protocol::client::TwsClient;
+use protocol::util::{BoxFuture, LogLevel};
+use tokio_core::reactor::{Core, Handle};
 
+#[allow(unreachable_code)]
 fn main() {
-    match &env::args().nth(1).expect("Argument needed")[..] {
-        "server" => test_server(),
-        "client" => test_client(),
-        _ => println!("Unkown argument")
-    }
+    let mut core = Core::new().unwrap();
+
+    // Load cli argument definitions
+    let cli_def = load_yaml!("cli.yaml");
+    let mut app = App::from_yaml(cli_def);
+    let matches = app.clone().get_matches();
+
+    // Get task based on subcommand
+    let task = {
+        if let Some(subapp) = matches.subcommand_matches("server") {
+            server(core.handle(), subapp)
+        } else if let Some(subapp) = matches.subcommand_matches("client") {
+            client(core.handle(), subapp)
+        } else {
+            // No subcommand provided, print help and exit
+            app.print_help().unwrap();
+            std::process::exit(1);
+            unreachable!();
+        }
+    };
+    core.run(task).unwrap();
 }
 
-// TEMPORARY TEST CODE FOR SERVER
-fn test_server() {
-    //println!("Hello, world!");
-    let mut core = Core::new().unwrap();
-    let mut server = TwsServer::new(core.handle(), TwsServerOption {
-        listen: "127.0.0.1:23356".parse().unwrap(),
-        passwd: String::from("testpassword"),
-        timeout: 5000
-    });
-    server.on_log(|l, m| {
-        println!("{:?}: {:?}", l, m);
-    });
-    core.run(server.run()).unwrap();
+fn server(handle: Handle, matches: &ArgMatches) -> BoxFuture<'static, ()> {
+    let mut server = TwsServer::new(handle, matches.into());
+    server.on_log(logger);
+    server.run()
 }
 
-// TEMPORARY TEST CODE FOR CLIENT
-fn test_client() {
-    let mut core = Core::new().unwrap();
-    let mut client = TwsClient::new(core.handle(), TwsClientOption {
-        connections: 2,
-        listen: "127.0.0.1:23360".parse().unwrap(),
-        remote: "127.0.0.1:5201".parse().unwrap(),
-        server: String::from("ws://127.0.0.1:23356/"),
-        passwd: String::from("testpassword"),
-        timeout: 5000,
-        retry_timeout: 500
-    });
-    client.on_log(|l, m| {
-        // TODO: Extract common logging logic.
-        println!("{:?}: {:?}", l, m);
-    });
-    core.run(client.run()).unwrap();
+fn client(handle: Handle, matches: &ArgMatches) -> BoxFuture<'static, ()> {
+    let mut client = TwsClient::new(handle, matches.into());
+    client.on_log(logger);
+    client.run()
+}
+
+fn logger(level: LogLevel, message: &str) {
+    println!("{:?}: {}", level, message);
 }
