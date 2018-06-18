@@ -34,7 +34,7 @@ pub struct TwsServerOption {
  * A TWS Server instance.
  * 
  * Listens for incoming WebSocket connections
- * and estabilishes individual TWS sessions
+ * and establishes individual TWS sessions
  * on each connection. It then forwards data
  * packets from the client to the designated
  * remote server as is requested by the client.

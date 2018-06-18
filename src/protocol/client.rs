@@ -543,7 +543,7 @@ impl TwsConnection for ClientConnection {
 impl Drop for ClientConnection {
     fn drop(&mut self) {
         /*
-         * Close immediatly on drop.
+         * Close immediately on drop.
          */
         self.close();
     }
