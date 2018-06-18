@@ -5,6 +5,7 @@
  * of the protocol.
  */
 use bytes::{Bytes, BytesMut};
+use futures;
 use futures::future::{Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
 use protocol::protocol as proto;
@@ -16,10 +17,11 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::Handle;
+use tokio::reactor::Handle;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::executor::current_thread;
 use tokio_io::codec::Framed;
-use tokio_timer::Timer;
+use tokio_timer;
 use websocket::{ClientBuilder, OwnedMessage};
 use websocket::async::MessageCodec;
 use websocket::stream::async::Stream as WsStream;
@@ -40,16 +42,14 @@ pub struct TwsClientOption {
  */
 pub struct TwsClient {
     option: TwsClientOption,
-    handle: Handle,
     logger: util::Logger,
     sessions: Rc<RefCell<Vec<Option<ClientSessionHandle>>>>
 }
 
 impl TwsClient {
-    pub fn new(handle: Handle, option: TwsClientOption) -> TwsClient {
+    pub fn new(option: TwsClientOption) -> TwsClient {
         let capacity = option.connections;
         TwsClient {
-            handle,
             option,
             logger: Rc::new(util::default_logger),
             sessions: Rc::new(RefCell::new(Vec::with_capacity(capacity))) // TODO: Maintain a list of connections
@@ -61,22 +61,23 @@ impl TwsClient {
     }
 
     pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
-        clone!(self, sessions, handle, logger);
-        self.maintain_sessions();
-        TcpListener::bind(&self.option.listen, &self.handle)
+        clone!(self, sessions, logger);
+        let task_maintain_sessions = self.maintain_sessions();
+        TcpListener::bind(&self.option.listen)
             .into_future()
             .chain_err(|| "Failed to bind to local port")
             .map(move |server| {
+                current_thread::spawn(task_maintain_sessions);
                 server.incoming()
                     .map_err(|_| "Failed to listen for connections".into())
             })
             .flatten_stream()
-            .for_each(move |(client, _addr)| {
+            .for_each(move |client| {
                 // Randomly choose a session to assign the new connection to.
                 let session_id = Self::choose_session(&sessions);
                 if let Some(id) = session_id {
                     if let Some(ref conn) = sessions.borrow()[id] {
-                        let conn_id = conn.add_pending_connection(client, handle.clone());
+                        let conn_id = conn.add_pending_connection(client);
                         do_log!(logger, INFO, "[{}] new connection assigned to session {}", conn_id, id);
                     }
                 } else {
@@ -91,17 +92,22 @@ impl TwsClient {
      * Spawn a task for each session
      * maintain the session, retry when closed.
      */
-    fn maintain_sessions(&self) {
-        for _ in 0..self.option.connections {
-            self.sessions.borrow_mut().push(None);
-        }
+    fn maintain_sessions(&self) -> impl Future<Error=(), Item=()> {
+        clone!(self, option, sessions, logger);
+        futures::lazy(move || {
+            for _ in 0..option.connections {
+                sessions.borrow_mut().push(None);
+            }
 
-        for i in 0..self.option.connections {
-            self.handle.spawn(
-                Self::run_session(self.sessions.clone(), self.handle.clone(), self.logger.clone(), self.option.clone(), i)
-                    .map_err(|_| ())
-            )
-        }
+            for i in 0..option.connections {
+                current_thread::spawn(
+                    Self::run_session(sessions.clone(), logger.clone(), option.clone(), i)
+                        .map_err(|_| ())
+                )
+            }
+
+            futures::future::ok(())
+        })
     }
 
     /*
@@ -110,12 +116,12 @@ impl TwsClient {
      */
     fn run_session<'a>(
         sessions: Rc<RefCell<Vec<Option<ClientSessionHandle>>>>,
-        handle: Handle, logger: util::Logger, option: TwsClientOption, id: usize
+        logger: util::Logger, option: TwsClientOption, id: usize
     ) -> BoxFuture<'a, ()> {
-        let s = ClientSession::new(id, handle.clone(), logger.clone(), option.clone());
+        let s = ClientSession::new(id, logger.clone(), option.clone());
         sessions.borrow_mut()[id] = Some(s.get_handle());
         s.run()
-            .then(clone!(handle; |_| {
+            .then(move |_| {
                 do_log!(logger, WARNING, "Session {} closed. Retrying...", id);
 
                 // Get rid of the handle first.
@@ -123,9 +129,9 @@ impl TwsClient {
 
                 // Restart this session (wait for some timeout)
                 // TODO: Exponential backoff
-                Timer::default().sleep(Duration::from_millis(option.retry_timeout))
-                    .then(move |_| Self::run_session(sessions, handle, logger, option, id))
-            }))
+                tokio_timer::sleep(Duration::from_millis(option.retry_timeout))
+                    .then(move |_| Self::run_session(sessions, logger, option, id))
+            })
             ._box()
     }
 
@@ -204,12 +210,11 @@ impl ClientSessionHandle {
      * The connection will be active once the server finishes
      * connecting to remote.
      */
-    fn add_pending_connection(&self, client: TcpStream, handle: Handle) -> String {
+    fn add_pending_connection(&self, client: TcpStream) -> String {
         let conn_id = util::rand_str(6);
         self.state.borrow_mut().pending_connections.insert(conn_id.clone(), PendingClientConnection {
             created: Instant::now(),
             conn_id: conn_id.clone(),
-            handle,
             logger: self.logger.clone(),
             client,
             ws_writer: self.writer.clone(),
@@ -233,7 +238,6 @@ impl ClientSessionHandle {
 struct ClientSession {
     id: usize,
     option: TwsClientOption,
-    handle: Handle,
     logger: util::Logger,
     writer: SharedWriter<ServerSink>,
     heartbeat_agent: HeartbeatAgent<ServerSink>,
@@ -241,13 +245,12 @@ struct ClientSession {
 }
 
 impl ClientSession {
-    fn new(id: usize, handle: Handle, logger: util::Logger, option: TwsClientOption) -> ClientSession {
+    fn new(id: usize, logger: util::Logger, option: TwsClientOption) -> ClientSession {
         let writer = SharedWriter::new();
         ClientSession {
             heartbeat_agent: HeartbeatAgent::new(option.timeout, writer.clone()),
             id,
             option,
-            handle,
             logger,
             writer,
             state: Rc::new(RefCell::new(ClientSessionState {
@@ -278,14 +281,12 @@ impl ClientSession {
      * Try to connect and start to accept traffic.
      */
     fn run<'a>(self) -> BoxFuture<'a, ()> {
-        clone!(self, handle);
-
         // Create the WebSocket client.
         ClientBuilder::new(&self.option.server)
             .into_future()
             .chain_err(|| "Parse failure")
             .and_then(move |builder| {
-                builder.async_connect(None, &handle)
+                builder.async_connect(None, &Handle::current())
                     .chain_err(|| "Connect failure")
             })
             .and_then(move |(client, _headers)| {
@@ -298,7 +299,7 @@ impl ClientSession {
                 self.run_service(client)
                     .select2(
                         // Periodically remove all pending connections.
-                        Timer::default().interval(Duration::from_millis(option.timeout))
+                        tokio_timer::Interval::new(Instant::now(), Duration::from_millis(option.timeout))
                             .for_each(clone!(state; |_| {
                                 do_log!(logger, DEBUG, "Periodic cleanup of dead pending connections");
                                 let to_remove: Vec<_> = state.borrow_mut().pending_connections.iter()
@@ -445,7 +446,6 @@ impl TwsConnectionHandler for ClientConnectionHandler {
 struct PendingClientConnection {
     created: Instant,
     conn_id: String,
-    handle: Handle,
     logger: util::Logger,
     client: TcpStream,
     ws_writer: SharedWriter<ServerSink>,
@@ -458,7 +458,7 @@ impl PendingClientConnection {
      */
     fn connect(self) -> ClientConnection {
         ClientConnection::new(
-            self.conn_id.clone(), self.logger, self.handle, self.client, self.ws_writer.clone(),
+            self.conn_id.clone(), self.logger, self.client, self.ws_writer.clone(),
             ClientConnectionHandler {
                 conn_id: self.conn_id,
                 ws_writer: self.ws_writer,
@@ -485,11 +485,11 @@ impl ClientConnection {
      * Do not use this if the connection should be pending.
      */
     fn new(
-        conn_id: String, logger: util::Logger, handle: Handle, client: TcpStream,
+        conn_id: String, logger: util::Logger, client: TcpStream,
         ws_writer: SharedWriter<ServerSink>, conn_handler: ClientConnectionHandler
     ) -> ClientConnection {
         let (writer, read_throttler) =
-            Self::create(conn_id.clone(), handle, logger.clone(), client, ws_writer, conn_handler);
+            Self::create(conn_id.clone(), logger.clone(), client, ws_writer, conn_handler);
 
         ClientConnection {
             conn_id,

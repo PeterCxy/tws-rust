@@ -10,9 +10,9 @@ use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::str;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use time;
-use tokio_timer::{Timer};
+use tokio_timer;
 use websocket::OwnedMessage;
 
 /*
@@ -569,8 +569,11 @@ impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
     pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
         let writer = self.writer.clone();
         let heartbeat_received = self.heartbeat_received.clone();
-        Timer::default().interval(Duration::from_millis(self.timeout))
-            .map_err(|_| "Unknown error".into())
+        tokio_timer::Interval::new(Instant::now(), Duration::from_millis(self.timeout))
+            .map_err(|e| {
+                println!("{:?}", e);
+                "Unknown error".into()
+            })
             .for_each(move |_| {
                 if !heartbeat_received.get() {
                     // Close if no Pong is received within

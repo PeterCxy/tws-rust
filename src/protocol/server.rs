@@ -15,8 +15,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use tokio_core::net::TcpStream;
-use tokio_core::reactor::Handle;
+use tokio::executor::current_thread;
+use tokio::net::TcpStream;
+use tokio::reactor::Handle;
 use tokio_io::codec::Framed;
 use websocket::OwnedMessage;
 use websocket::async::{Server, Client, MessageCodec};
@@ -43,15 +44,13 @@ pub struct TwsServerOption {
  */
 pub struct TwsServer {
     option: TwsServerOption,
-    handle: Handle, // Tokio Handle
     logger: util::Logger // An abstract logger (see `util.rs` for details)
 }
 
 impl TwsServer {
-    pub fn new(handle: Handle, option: TwsServerOption) -> TwsServer {
+    pub fn new(option: TwsServerOption) -> TwsServer {
         TwsServer {
             option,
-            handle,
             logger: Rc::new(util::default_logger)
         }
     }
@@ -68,11 +67,11 @@ impl TwsServer {
      * the server working correctly.
      */
     pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
-        clone!(self, option, logger, handle);
+        clone!(self, option, logger);
 
         // Bind the port first
         // this is a Result, we convert it to Future.
-        Server::bind(self.option.listen, &self.handle)
+        Server::bind(self.option.listen, &Handle::current())
             .into_future()
             .chain_err(|| "Failed to bind to server")
             .map(move |server| {
@@ -87,14 +86,14 @@ impl TwsServer {
                 // on the event loop.
                 let work = upgrade.accept()
                     .chain_err(|| "Failed to accept connection.")
-                    .and_then(clone!(option, logger, handle; |(client, _)| {
+                    .and_then(clone!(option, logger; |(client, _)| {
                         // Create a new ServerSession object
                         // in charge of every connection.
-                        ServerSession::new(option, logger, handle)
+                        ServerSession::new(option, logger)
                             .run(client, addr)
                     }))
                     .map_err(|_| ());
-                handle.spawn(work);
+                current_thread::spawn(work);
                 Ok(())
             })
             ._box()
@@ -142,20 +141,18 @@ impl TwsServiceState<RemoteConnection> for ServerSessionState {
 struct ServerSession {
     option: TwsServerOption, // Options should be passed from TwsServer instance.
     logger: util::Logger,
-    handle: Handle, // Tokio handle
     writer: SharedWriter<ClientSink>, // Writer for sending packets to the client side
     heartbeat_agent: HeartbeatAgent<ClientSink>, // Agent for doing heartbeats
     state: Rc<RefCell<ServerSessionState>> // The mutable state of this session
 }
 
 impl ServerSession {
-    fn new(option: TwsServerOption, logger: util::Logger, handle: Handle) -> ServerSession {
+    fn new(option: TwsServerOption, logger: util::Logger) -> ServerSession {
         let writer = SharedWriter::new();
         ServerSession {
             heartbeat_agent: HeartbeatAgent::new(option.timeout, writer.clone()),
             option,
             logger,
-            handle,
             writer,
             state: Rc::new(RefCell::new(ServerSessionState {
                 remote: None,
@@ -276,7 +273,7 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
         clone!(self, state, writer, logger);
         let conn_id_owned = String::from(conn_id);
         let conn_work = RemoteConnection::connect(
-            conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), self.handle.clone(), writer.clone(),
+            conn_id, logger.clone(), &self.state.borrow().remote.unwrap(), writer.clone(),
             RemoteConnectionHandler {
                 conn_id: conn_id_owned.clone(),
                 ws_writer: writer.clone(),
@@ -305,7 +302,7 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
                 }
                 Ok(())
             }));
-        self.handle.spawn(conn_work);
+        current_thread::spawn(conn_work);
     }
 
     fn on_connect_state(&self, conn_id: &str, conn_state: proto::ConnectionState) {
@@ -371,17 +368,16 @@ impl RemoteConnection {
         conn_id: &str,
         logger: util::Logger,
         addr: &SocketAddr,
-        handle: Handle,
         ws_writer: SharedWriter<ClientSink>,
         conn_handler: RemoteConnectionHandler
     ) -> BoxFuture<'a, RemoteConnection> {
         let conn_id_owned = String::from(conn_id);
 
-        TcpStream::connect(addr, &handle.clone())
+        TcpStream::connect(addr)
             .chain_err(|| "Connection failed")
             .map(move |s| {
                 let (remote_writer, read_throttler) =
-                    Self::create(conn_id_owned.clone(), handle, logger.clone(), s, ws_writer, conn_handler);
+                    Self::create(conn_id_owned.clone(), logger.clone(), s, ws_writer, conn_handler);
 
                 // Create RemoteConnection object
                 // To be used in ServerSession to forward data

@@ -18,8 +18,8 @@ use std::rc::Rc;
 use tokio_io::AsyncRead;
 use protocol::codec::BytesCodec; // TODO: Switch back to tokio_io when upgraded to 0.1.5
 use tokio_io::codec::Framed;
-use tokio_core::net::TcpStream;
-use tokio_core::reactor::Handle;
+use tokio::net::TcpStream;
+use tokio::executor::current_thread;
 
 pub trait TwsServiceState<C: TwsConnection>: 'static + Sized {
     fn get_connections(&mut self) -> &mut HashMap<String, C>;
@@ -272,7 +272,7 @@ pub trait TwsConnection: 'static + Sized {
      * set up the reading and writing part of the connection
      */
     fn create<S: 'static + WsStream, H: TwsConnectionHandler>(
-        conn_id: String, handle: Handle, logger: util::Logger,
+        conn_id: String, logger: util::Logger,
         client: TcpStream, ws_writer: SharedWriter<SplitSink<Client<S>>>,
         conn_handler: H
     ) -> (SharedWriter<TcpSink>, StreamThrottler) {
@@ -310,7 +310,7 @@ pub trait TwsConnection: 'static + Sized {
         // has happened.
         // Once one of them is finished, just tear down the whole
         // channel.
-        handle.spawn(stream_work.select(sink_work)
+        current_thread::spawn(stream_work.select(sink_work)
             .then(clone!(logger, conn_id, conn_handler; |_| {
                 // Clean-up job upon finishing
                 // No matter if there is any error.
