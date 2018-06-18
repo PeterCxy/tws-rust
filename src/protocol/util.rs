@@ -566,7 +566,7 @@ impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
      * Please always use a Select combinator
      * to run this, instead of a Join combinator.
      */
-    pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
+    pub fn run<'a>(&self) -> impl Future<Error=Error, Item=()> {
         let writer = self.writer.clone();
         let heartbeat_received = self.heartbeat_received.clone();
         tokio_timer::Interval::new(Instant::now(), Duration::from_millis(self.timeout))
@@ -587,7 +587,6 @@ impl<S> HeartbeatAgent<S> where S: 'static + Sink<SinkItem=OwnedMessage> {
                 heartbeat_received.set(false);
                 Ok(())
             })
-            ._box()
     }
 }
 

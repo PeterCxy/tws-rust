@@ -4,6 +4,7 @@
  * Refer to `protocol.rs` for detailed description
  * of the protocol.
  */
+use errors::*;
 use bytes::{Bytes, BytesMut};
 use futures::Stream;
 use futures::future::{Future, IntoFuture};
@@ -173,7 +174,7 @@ impl ServerSession {
      * this session, which should be spawned on the event
      * loop.
      */
-    fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> BoxFuture<'a, ()> {
+    fn run<'a>(self, client: Client<TcpStream>, addr: SocketAddr) -> impl Future<Error=Error, Item=()> {
         clone!(self, state);
 
         // Now we have the client address
@@ -188,7 +189,6 @@ impl ServerSession {
 
                 Ok(())
             }))
-            ._box()
     }
 
     fn check_handshaked(&self) -> bool {
@@ -371,7 +371,7 @@ impl RemoteConnection {
         addr: &SocketAddr,
         ws_writer: SharedWriter<ClientSink>,
         conn_handler: RemoteConnectionHandler
-    ) -> BoxFuture<'a, RemoteConnection> {
+    ) -> impl Future<Error=Error, Item=RemoteConnection> {
         let conn_id_owned = String::from(conn_id);
 
         TcpStream::connect(addr)
@@ -390,7 +390,6 @@ impl RemoteConnection {
                     read_pause_counter: 0
                 }
             })
-            ._box()
     }
 }
 

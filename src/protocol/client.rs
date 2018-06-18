@@ -4,6 +4,7 @@
  * Refer to `protocol.rs` for detailed description
  * of the protocol.
  */
+use errors::*;
 use bytes::{Bytes, BytesMut};
 use futures;
 use futures::future::{Future, IntoFuture};
@@ -280,7 +281,7 @@ impl ClientSession {
      * Spin up the session
      * Try to connect and start to accept traffic.
      */
-    fn run<'a>(self) -> BoxFuture<'a, ()> {
+    fn run<'a>(self) -> impl Future<Error=Error, Item=()> {
         // Create the WebSocket client.
         ClientBuilder::new(&self.option.server)
             .into_future()
@@ -323,7 +324,7 @@ impl ClientSession {
                         Ok(())
                     })
             })
-            ._box() // When this future finish, everything should end here.
+            // When this future finish, everything should end here.
     }
 
     /*
