@@ -11,6 +11,7 @@ extern crate tokio;
 extern crate tokio_io;
 extern crate tokio_timer;
 extern crate tokio_executor;
+extern crate tokio_codec;
 extern crate websocket;
 
 #[macro_use]

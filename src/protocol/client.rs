@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use tokio::reactor::Handle;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::executor::current_thread;
-use tokio_io::codec::Framed;
+use tokio_codec::Framed;
 use tokio_timer;
 use websocket::{ClientBuilder, OwnedMessage};
 use websocket::async::MessageCodec;
@@ -296,7 +296,8 @@ impl ClientSession {
                 self.writer.feed(OwnedMessage::Text(proto::handshake_build(&option.passwd, option.remote.clone()).unwrap()));
 
                 // Spin up the service
-                self.run_service(client)
+                // TODO: Remove the temporary unsafe hack for compatibility with old Framed
+                self.run_service(unsafe { ::std::mem::transmute(client) })
                     .select2(
                         // Periodically remove all pending connections.
                         tokio_timer::Interval::new(Instant::now(), Duration::from_millis(option.timeout))

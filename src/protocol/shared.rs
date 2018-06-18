@@ -8,18 +8,18 @@ use futures::stream::SplitSink;
 use protocol::protocol as proto;
 use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter, StreamThrottler, ThrottlingHandler};
 use websocket::OwnedMessage;
-use websocket::async::Client;
 use websocket::stream::async::Stream as WsStream;
+use websocket::codec::ws::MessageCodec;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use tokio_io::AsyncRead;
-use protocol::codec::BytesCodec; // TODO: Switch back to tokio_io when upgraded to 0.1.5
-use tokio_io::codec::Framed;
+use tokio_codec::{BytesCodec, Decoder, Framed};
 use tokio::net::TcpStream;
 use tokio::executor::current_thread;
+
+pub type Client<S> = Framed<S, MessageCodec<OwnedMessage>>;
 
 pub trait TwsServiceState<C: TwsConnection>: 'static + Sized {
     fn get_connections(&mut self) -> &mut HashMap<String, C>;
@@ -280,7 +280,7 @@ pub trait TwsConnection: 'static + Sized {
         let conn_handler = Rc::new(conn_handler);
 
         let read_throttler = StreamThrottler::new();
-        let (sink, stream) = client.framed(BytesCodec::new()).split();
+        let (sink, stream) = BytesCodec::new().framed(client).split();
         // SharedWriter for sending to remote
         let remote_writer = SharedWriter::new();
         remote_writer.set_throttling_handler(TwsTcpWriteThrottlingHandler {

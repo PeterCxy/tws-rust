@@ -9,7 +9,7 @@ use futures::Stream;
 use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink};
+use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink, Client};
 use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, StreamThrottler};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -18,9 +18,9 @@ use std::rc::Rc;
 use tokio::executor::current_thread;
 use tokio::net::TcpStream;
 use tokio::reactor::Handle;
-use tokio_io::codec::Framed;
+use tokio_codec::Framed;
 use websocket::OwnedMessage;
-use websocket::async::{Server, Client, MessageCodec};
+use websocket::async::{Server, MessageCodec};
 
 #[derive(Clone)]
 pub struct TwsServerOption {
@@ -89,8 +89,9 @@ impl TwsServer {
                     .and_then(clone!(option, logger; |(client, _)| {
                         // Create a new ServerSession object
                         // in charge of every connection.
+                        // TODO: Remove the temporary unsafe hack for compatibility with old Framed
                         ServerSession::new(option, logger)
-                            .run(client, addr)
+                            .run(unsafe { ::std::mem::transmute(client) }, addr)
                     }))
                     .map_err(|_| ());
                 current_thread::spawn(work);
