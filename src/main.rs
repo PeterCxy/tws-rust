@@ -107,10 +107,7 @@ fn main_thread(handle: &Handle) {
 
 fn server(matches: &ArgMatches) -> impl Future<Error=errors::Error, Item=()> {
     let mut server = TwsServer::new(matches.try_into().unwrap_or_else(|e| {
-        println!("error: {}", e);
-        println!("{}", matches.usage());
-        println!("Please use `--help` for complete usage of this command");
-        panic!("invalid arguments");
+        err_invalid_arguments(matches, e)
     }));
     server.on_log(logger);
     server.run()
@@ -118,13 +115,17 @@ fn server(matches: &ArgMatches) -> impl Future<Error=errors::Error, Item=()> {
 
 fn client(matches: &ArgMatches) -> impl Future<Error=errors::Error, Item=()> {
     let mut client = TwsClient::new(matches.try_into().unwrap_or_else(|e| {
-        println!("error: {}", e);
-        println!("{}", matches.usage());
-        println!("Please use `--help` for complete usage of this command");
-        panic!("invalid arguments");
+        err_invalid_arguments(matches, e)
     }));
     client.on_log(logger);
     client.run()
+}
+
+fn err_invalid_arguments(matches: &ArgMatches, err: String) -> ! {
+    println!("error: {}", err);
+    println!("{}", matches.usage());
+    println!("Please use `--help` for complete usage of this command");
+    panic!("invalid arguments");
 }
 
 // TODO: Support specifying log level from cli
