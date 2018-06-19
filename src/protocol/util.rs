@@ -1,5 +1,5 @@
 use errors::*;
-use futures::{Async, Stream, Sink};
+use futures::{Async, Stream, Sink, Poll};
 use futures::future::Future;
 use futures::task::{self, Task};
 use rand::{self, Rng};
@@ -123,24 +123,58 @@ pub fn rand_str(len: usize) -> String {
 
 // Glue code to make error-chain work with futures
 // Source: <https://github.com/alexcrichton/sccache/blob/master/src/errors.rs>
-// Modified to avoid static lifetimes
+// Modified to avoid static lifetimes and heap allocation
 pub type BoxFuture<'a, T> = Box<'a + Future<Item = T, Error = Error>>;
 
-pub trait FutureChainErr<'a, T> {
-    fn chain_err<F, E>(self, callback: F) -> BoxFuture<'a, T>
-        where F: FnOnce() -> E + 'a,
+pub trait FutureChainErr<'a, F: Future, T>
+    where F: Future + 'a,
+          F::Error: error::Error + Send + 'static {
+    fn chain_err<CB, E>(self, callback: CB) -> ChainErr<F, CB, E>
+        where CB: FnOnce() -> E + Clone + 'a,
               E: Into<ErrorKind>;
 }
 
-impl<'a, F> FutureChainErr<'a, F::Item> for F
+impl<'a, F> FutureChainErr<'a, F, F::Item> for F
     where F: Future + 'a,
           F::Error: error::Error + Send + 'static,
 {
-    fn chain_err<C, E>(self, callback: C) -> BoxFuture<'a, F::Item>
-        where C: FnOnce() -> E + 'a,
+    fn chain_err<C, E>(self, callback: C) -> ChainErr<F, C, E>
+        where C: FnOnce() -> E + Clone + 'a,
               E: Into<ErrorKind>,
     {
-        self.then(|r| r.chain_err(callback))._box()
+        ChainErr::new(self, callback)
+    }
+}
+
+pub struct ChainErr<F: Future, CB, EK: Into<ErrorKind>>
+    where F::Error: error::Error + Send + 'static,
+          CB: FnOnce() -> EK + Clone {
+    future: F,
+    callback: CB
+}
+
+impl<F: Future, CB, EK: Into<ErrorKind>> ChainErr<F, CB, EK>
+    where F::Error: error::Error + Send + 'static,
+          CB: FnOnce() -> EK + Clone {
+
+    fn new(future: F, callback: CB) -> ChainErr<F, CB, EK> {
+        ChainErr {
+            future,
+            callback: callback
+        }
+    }
+
+}
+
+impl<F: Future, CB, EK: Into<ErrorKind>> Future for ChainErr<F, CB, EK>
+    where F::Error: error::Error + Send + 'static,
+          CB: FnOnce() -> EK + Clone {
+    type Error = Error;
+    type Item = F::Item;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let p = self.future.poll();
+        p.chain_err(self.callback.clone())
     }
 }
 
