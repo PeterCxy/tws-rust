@@ -94,6 +94,7 @@ fn main_thread(handle: &Handle) {
         };
 
         current_thread::CurrentThread::new().enter(ent).block_on(task).unwrap();
+        process::exit(0);
     });
 }
 
