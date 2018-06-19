@@ -16,6 +16,12 @@ use tokio_timer;
 use websocket::OwnedMessage;
 
 /*
+ * Default value functions for use with serde
+ */
+pub fn default_timeout() -> u64 { 5000 }
+pub fn default_connections() -> usize { 2 }
+
+/*
  * Abstract loggers
  * We'd like to deal with logging outside
  * of this module

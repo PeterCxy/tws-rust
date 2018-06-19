@@ -11,19 +11,22 @@ subcommands:
   - server:
       about: Run in server mode
       args:
+        - config:
+            long: config
+            value_name: FILE_NAME
+            takes_value: true
+            help: Load a configuration file in yaml format that overrides all the command-line options
         - listen:
             short: l
             long: listen
             value_name: ADDR
             takes_value: true
-            required: true
             help: Address to listen on (e.g. 127.0.0.1:8080)
         - timeout:
             short: t
             long: timeout
             value_name: TIMEOUT
             takes_value: true
-            required: false
             default_value: "5000"
             help: Time in milliseconds before considering inactive clients as disconnected
         - passwd:
@@ -31,38 +34,38 @@ subcommands:
             long: passwd
             value_name: SECRET
             takes_value: true
-            required: true
             help: Shared password with the client
   - client:
       about: Run in client mode
       args:
+        - config:
+            long: config
+            value_name: FILE_NAME
+            takes_value: true
+            help: Load a configuration file in yaml format that overrides all the command-line options
         - listen:
             short: l
             long: listen
             value_name: ADDR
             takes_value: true
-            required: true
             help: Address to listen on (e.g. 127.0.0.1:8080)
         - server:
             short: s
             long: server
             value_name: URL
             takes_value: true
-            required: true
             help: URL of TWS server (e.g. wss://example.com/my_tws_server)
         - remote:
             short: r
             long: remote
             value_name: ADDR
             takes_value: true
-            required: true
             help: Address of the tagrte host to forward connections to (e.g. 4.5.6.7:3000)
         - timeout:
             short: t
             long: timeout
             value_name: TIMEOUT
             takes_value: true
-            required: false
             default_value: "5000"
             help: Time in milliseconds before considering the server as disconnected
         - retry_timeout:
@@ -70,7 +73,6 @@ subcommands:
             long: retry_timeout
             value_name: TIMEOUT
             takes_value: true
-            required: false
             default_value: "5000"
             help: Time in milliseconds in which interrupted sessions will retry
         - connections:
@@ -78,7 +80,6 @@ subcommands:
             long: connections
             value_name: NUM
             takes_value: true
-            required: false
             default_value: "2"
             help: Number of concurrent WebSocket connections to maintain
         - passwd:
@@ -86,5 +87,4 @@ subcommands:
             long: passwd
             value_name: SECRET
             takes_value: true
-            required: true
             help: Shared password with the server

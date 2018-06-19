@@ -1,3 +1,5 @@
+#![feature(try_from)]
+
 extern crate base64;
 extern crate bytes;
 #[macro_use]
@@ -16,6 +18,11 @@ extern crate websocket;
 
 #[macro_use]
 extern crate error_chain;
+
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_yaml;
 
 mod protocol;
 mod parser;
@@ -41,6 +48,7 @@ use protocol::util::LogLevel;
 use tokio::executor::current_thread;
 use tokio_timer::timer::{Handle, Timer};
 use std::{thread, panic, process};
+use std::convert::TryInto;
 
 fn main() {
     // Exit the whole program if any of the threads panic
@@ -71,7 +79,6 @@ fn main() {
 #[allow(unreachable_code)]
 fn main_thread(handle: &Handle) {
     // Load cli argument definitions
-    // TODO: Support appending options from config file
     let cli_def = load_yaml!("cli.yaml");
     let mut app = App::from_yaml(cli_def);
     let matches = app.clone().get_matches();
@@ -99,13 +106,23 @@ fn main_thread(handle: &Handle) {
 }
 
 fn server(matches: &ArgMatches) -> impl Future<Error=errors::Error, Item=()> {
-    let mut server = TwsServer::new(matches.into());
+    let mut server = TwsServer::new(matches.try_into().unwrap_or_else(|e| {
+        println!("error: {}", e);
+        println!("{}", matches.usage());
+        println!("Please use `--help` for complete usage of this command");
+        panic!("invalid arguments");
+    }));
     server.on_log(logger);
     server.run()
 }
 
 fn client(matches: &ArgMatches) -> impl Future<Error=errors::Error, Item=()> {
-    let mut client = TwsClient::new(matches.into());
+    let mut client = TwsClient::new(matches.try_into().unwrap_or_else(|e| {
+        println!("error: {}", e);
+        println!("{}", matches.usage());
+        println!("Please use `--help` for complete usage of this command");
+        panic!("invalid arguments");
+    }));
     client.on_log(logger);
     client.run()
 }

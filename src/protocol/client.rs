@@ -27,14 +27,17 @@ use websocket::{ClientBuilder, OwnedMessage};
 use websocket::async::MessageCodec;
 use websocket::stream::async::Stream as WsStream;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TwsClientOption {
+    #[serde(default = "util::default_connections")]
     pub connections: usize,
     pub listen: SocketAddr,
     pub remote: SocketAddr,
     pub server: String,
     pub passwd: String,
+    #[serde(default = "util::default_timeout")]
     pub timeout: u64,
+    #[serde(default = "util::default_timeout")]
     pub retry_timeout: u64
 }
 

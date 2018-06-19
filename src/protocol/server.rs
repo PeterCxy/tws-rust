@@ -23,10 +23,11 @@ use tokio_codec::Framed;
 use websocket::OwnedMessage;
 use websocket::async::{Server, MessageCodec};
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TwsServerOption {
     pub listen: SocketAddr,
     pub passwd: String,
+    #[serde(default = "util::default_timeout")]
     pub timeout: u64
 }
 
