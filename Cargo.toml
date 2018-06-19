@@ -21,4 +21,5 @@ tokio-codec = "0.1"
 #websocket = "0.20"
 
 [dependencies.websocket]
-git = "https://github.com/enzious/rust-websocket"
+git = "https://git.angry.im/PeterCxy/rust-websocket"
+#path = "../rust-websocket"
