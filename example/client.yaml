@@ -1,0 +1,6 @@
+listen: 127.0.0.1:5203
+server: ws://127.0.0.1:5202
+remote: 127.0.0.1:5201
+passwd: my_super_safe_password
+timeout: 5000
+retry_timeout: 5000
