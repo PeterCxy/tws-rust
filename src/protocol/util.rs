@@ -16,7 +16,7 @@ use tokio_timer;
 use websocket::OwnedMessage;
 
 /*
- * Abstrasct loggers
+ * Abstract loggers
  * We'd like to deal with logging outside
  * of this module
  */
