@@ -40,9 +40,16 @@ use protocol::client::TwsClient;
 use protocol::util::LogLevel;
 use tokio::executor::current_thread;
 use tokio_timer::timer::{Handle, Timer};
-use std::thread;
+use std::{thread, panic, process};
 
 fn main() {
+    // Exit the whole program if any of the threads panic
+    let orig_handler = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        orig_handler(info);
+        process::exit(1);
+    }));
+
     // Set up tokio_timer environment first
     let mut timer = Timer::default();
     let handle = timer.handle();
