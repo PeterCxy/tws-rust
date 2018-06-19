@@ -11,7 +11,7 @@ use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
 use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink, Client};
-use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, StreamThrottler};
+use protocol::util::{self, FutureChainErr, HeartbeatAgent, SharedWriter, StreamThrottler};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -67,7 +67,7 @@ impl TwsServer {
      * The future should be polled in order to have
      * the server working correctly.
      */
-    pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
+    pub fn run<'a>(&self) -> impl Future<Error=Error, Item=()> {
         clone!(self, option, logger);
 
         // Bind the port first
@@ -98,7 +98,6 @@ impl TwsServer {
                 current_thread::spawn(work);
                 Ok(())
             })
-            ._box()
     }
 }
 

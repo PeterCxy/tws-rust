@@ -61,7 +61,7 @@ impl TwsClient {
         self.logger = Rc::new(logger);
     }
 
-    pub fn run<'a>(&self) -> BoxFuture<'a, ()> {
+    pub fn run<'a>(&self) -> impl Future<Error=Error, Item=()> {
         clone!(self, sessions, logger);
         let task_maintain_sessions = self.maintain_sessions();
         TcpListener::bind(&self.option.listen)
@@ -86,7 +86,6 @@ impl TwsClient {
                 }
                 Ok(())
             })
-            ._box()
     }
 
     /*

@@ -34,9 +34,10 @@ mod errors {
 }
 
 use clap::{App, ArgMatches};
+use futures::future::{Either, Future};
 use protocol::server::TwsServer;
 use protocol::client::TwsClient;
-use protocol::util::{BoxFuture, LogLevel};
+use protocol::util::LogLevel;
 use tokio::executor::current_thread;
 use tokio_timer::timer::{Handle, Timer};
 use std::thread;
@@ -74,9 +75,9 @@ fn main_thread(handle: &Handle) {
         // Get task based on subcommand
         let task = {
             if let Some(subapp) = matches.subcommand_matches("server") {
-                server(subapp)
+                Either::A(server(subapp))
             } else if let Some(subapp) = matches.subcommand_matches("client") {
-                client(subapp)
+                Either::B(client(subapp))
             } else {
                 // No subcommand provided, print help and exit
                 app.print_help().unwrap();
@@ -89,13 +90,13 @@ fn main_thread(handle: &Handle) {
     });
 }
 
-fn server(matches: &ArgMatches) -> BoxFuture<'static, ()> {
+fn server(matches: &ArgMatches) -> impl Future<Error=errors::Error, Item=()> {
     let mut server = TwsServer::new(matches.into());
     server.on_log(logger);
     server.run()
 }
 
-fn client(matches: &ArgMatches) -> BoxFuture<'static, ()> {
+fn client(matches: &ArgMatches) -> impl Future<Error=errors::Error, Item=()> {
     let mut client = TwsClient::new(matches.into());
     client.on_log(logger);
     client.run()
