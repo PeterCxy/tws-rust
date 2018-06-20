@@ -115,6 +115,39 @@ location /some/path {
 
 In this case, the `tws-rust` must be listening on some port on `127.0.0.1` instead of your public IP. After configuring a reverse proxy, simply point the `--server` option of your client to `wss://your_domain/some/path` (note the `wss://` instead of `ws://`).
 
+Systemd
+===
+
+Systemd example is under `example` directory. You can copy `tws-rust` `tws@service` `server.yaml` files to the follow paths:
+
+```shell
+.
+├── etc
+│   ├── systemd
+│   │   └── system
+│   │       └── tws@.service
+│   └── tws
+│       ├── client.yaml
+│       └── server.yaml
+└── usr
+    └── bin
+        └── tws-rust
+```
+
+Start `tws-rust` server service
+
+```shell
+systemctl enable tws@server
+systemctl start tws@server
+```
+
+Start `tws-rust` client service
+
+```shell
+systemctl enable tws@client
+systemctl start tws@client
+```
+
 Benchmark
 ===
 
