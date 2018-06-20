@@ -60,7 +60,7 @@ subcommands:
             long: remote
             value_name: ADDR
             takes_value: true
-            help: Address of the tagrte host to forward connections to (e.g. 4.5.6.7:3000)
+            help: Address of the target host to forward connections to (e.g. 4.5.6.7:3000)
         - timeout:
             short: t
             long: timeout
