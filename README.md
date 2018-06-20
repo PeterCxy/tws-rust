@@ -5,6 +5,8 @@ tws-rust
 
 **Please carefully read this document before actually using this program!**
 
+**Disclaimer: This project was built with the intention of personal use, and was released in the hope that it would help others. There is ABSOLUTELY NO WARRANTY on this project, to the extent permitted by applicable laws. You should evaluate for yourself before using this project in production.**
+
 Features
 ===
 
