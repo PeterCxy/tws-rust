@@ -108,7 +108,7 @@ location /some/path {
   }
   proxy_pass http://127.0.0.1:TWS_PORT/;
   proxy_http_version 1.1;
-  proxy_set_header Upgrade $upgrade;
+  proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "Upgrade";
 }
 ```
@@ -209,3 +209,4 @@ iperf Done.
 ```
 
 Still faster than `chisel`: and in this test, `tws-rust` was only able to eat up 45% of the CPU because my Vultr instance was single core.
+
