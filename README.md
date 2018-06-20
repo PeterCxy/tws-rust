@@ -118,14 +118,15 @@ In this case, the `tws-rust` must be listening on some port on `127.0.0.1` inste
 Systemd
 ===
 
-Systemd example is under `example` directory. You can copy `tws-rust` `tws@service` `server.yaml` files to the follow paths:
+Systemd example is under `example` directory. You can copy `tws-rust` `tws-server@service` `tws-client@.service` and the `.yaml` configuration files to the follow paths:
 
 ```shell
 .
 ├── etc
 │   ├── systemd
 │   │   └── system
-│   │       └── tws@.service
+│   │       ├── tws-server@.service
+│   │       └── tws-client@.service
 │   └── tws
 │       ├── client.yaml
 │       └── server.yaml
@@ -137,16 +138,18 @@ Systemd example is under `example` directory. You can copy `tws-rust` `tws@servi
 Start `tws-rust` server service
 
 ```shell
-systemctl enable tws@server
-systemctl start tws@server
+systemctl enable tws-server@server
+systemctl start tws-server@server
 ```
 
 Start `tws-rust` client service
 
 ```shell
-systemctl enable tws@client
-systemctl start tws@client
+systemctl enable tws-client@client
+systemctl start tws-client@client
 ```
+
+You can change the part after `@` for your custom configuration file names.
 
 Benchmark
 ===

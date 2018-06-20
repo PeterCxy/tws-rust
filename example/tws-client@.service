@@ -1,0 +1,17 @@
+[Unit]
+Description=TCP over Websocket Client
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/tws-rust client --config /etc/tws/%i.yaml
+Restart=always
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=tws
+User=nobody
+Environment="SSL_CERT_DIR=/etc/ssl/certs"
+# On CentOS 7, or when the above does not work, use the following instead
+# Environment="SSL_CERT_FILE=/etc/pki/tls/cert.pem"
+
+[Install]
+WantedBy=multi-user.target
