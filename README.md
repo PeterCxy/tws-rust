@@ -18,7 +18,7 @@ Features
 Installation
 ===
 
-You could download pre-built binaries from the releases page. Or, you can build a release yourself by cloning this repository and
+You could download pre-built binaries from the [Releases](https://git.angry.im/PeterCxy/tws-rust/releases) page. Or, you can build a release yourself by cloning this repository and
 
 ```bash
 cargo build --release
