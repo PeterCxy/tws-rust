@@ -963,7 +963,7 @@ dependencies = [
 [[package]]
 name = "websocket"
 version = "0.20.2"
-source = "git+https://git.angry.im/PeterCxy/rust-websocket#c19729acdbc6d61604291dc3c86bd0477b03a54a"
+source = "git+https://git.angry.im/PeterCxy/rust-websocket#88ee64c2c59b1fd559e8b66d3b4df61b534b5701"
 dependencies = [
  "base64 0.5.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitflags 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",

@@ -25,7 +25,7 @@ tokio-codec = "0.1"
 
 [dependencies.websocket]
 git = "https://git.angry.im/PeterCxy/rust-websocket"
-#path = "../rust-websocket"
+features = ["nightly"]
 
 [profile.release]
 lto = true
