@@ -80,9 +80,15 @@ impl TwsServer {
                 // The WebSocket server is now listening.
                 // Retrieve the incoming connections as a stream
                 server.incoming()
-                    .map_err(|_| "Failed to accept connections".into())
+                    .map_err(|_| "Invalid Websocket connection".into())
             })
             .flatten_stream() // Convert the future to the stream of connections it contains.
+            .map(|t| Some(t))
+            .or_else(clone!(logger; |e| {
+                do_log!(logger, WARNING, "{:?}, continuing anyway", e);
+                Ok(None) // Recover from any error that might occur: just resume the stream
+            }))
+            .filter_map(|t| t)
             .for_each(move |(upgrade, addr)| {
                 // Spawn a separate task for every incoming connection
                 // on the event loop.
