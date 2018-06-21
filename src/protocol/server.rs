@@ -101,7 +101,9 @@ impl TwsServer {
                         ServerSession::new(option, logger)
                             .run(unsafe { ::std::mem::transmute(client) }, addr)
                     }))
-                    .map_err(|_| ());
+                    .map_err(clone!(logger; |e| {
+                        do_log!(logger, WARNING, "{:?}", e)
+                    }));
                 current_thread::spawn(work);
                 Ok(())
             })
