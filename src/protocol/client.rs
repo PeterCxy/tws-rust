@@ -308,8 +308,7 @@ impl ClientSession {
                 self.writer.feed(OwnedMessage::Text(proto::handshake_build(&option.passwd, option.remote.clone()).unwrap()));
 
                 // Spin up the service
-                // TODO: Remove the temporary unsafe hack for compatibility with old Framed
-                self.run_service(unsafe { ::std::mem::transmute(client) })
+                self.run_service(client)
                     .select2(
                         // Periodically remove all pending connections.
                         tokio_timer::Interval::new(Instant::now(), Duration::from_millis(option.timeout))

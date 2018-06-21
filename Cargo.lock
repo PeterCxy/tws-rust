@@ -963,7 +963,7 @@ dependencies = [
 [[package]]
 name = "websocket"
 version = "0.20.2"
-source = "git+https://git.angry.im/PeterCxy/rust-websocket#88ee64c2c59b1fd559e8b66d3b4df61b534b5701"
+source = "git+https://git.angry.im/PeterCxy/rust-websocket#cca4f42eb3572c899ee6ce2986f0b6de59b909a4"
 dependencies = [
  "base64 0.5.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitflags 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -978,6 +978,7 @@ dependencies = [
  "rand 0.3.22 (registry+https://github.com/rust-lang/crates.io-index)",
  "sha1 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tokio-codec 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-io 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-tls 0.1.4 (git+https://github.com/enzious/tokio-tls)",
  "unicase 2.1.0 (registry+https://github.com/rust-lang/crates.io-index)",

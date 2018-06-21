@@ -8,8 +8,8 @@ use futures::stream::SplitSink;
 use protocol::protocol as proto;
 use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter, StreamThrottler, ThrottlingHandler};
 use websocket::OwnedMessage;
+use websocket::async::Client;
 use websocket::stream::async::Stream as WsStream;
-use websocket::codec::ws::MessageCodec;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -18,8 +18,6 @@ use std::rc::Rc;
 use tokio_codec::{BytesCodec, Decoder, Framed};
 use tokio::net::TcpStream;
 use tokio::executor::current_thread;
-
-pub type Client<S> = Framed<S, MessageCodec<OwnedMessage>>;
 
 pub trait TwsServiceState<C: TwsConnection>: 'static + Sized {
     fn get_connections(&mut self) -> &mut HashMap<String, C>;
