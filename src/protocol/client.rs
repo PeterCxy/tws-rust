@@ -37,7 +37,7 @@ pub struct TwsClientOption {
     pub passwd: String,
     #[serde(default = "util::default_timeout")]
     pub timeout: u64,
-    #[serde(default = "util::default_timeout")]
+    #[serde(default = "util::default_retry_timeout")]
     pub retry_timeout: u64
 }
 
@@ -104,7 +104,7 @@ impl TwsClient {
 
             for i in 0..option.connections {
                 current_thread::spawn(
-                    Self::run_session(sessions.clone(), logger.clone(), option.clone(), i)
+                    Self::run_session(sessions.clone(), logger.clone(), option.clone(), i, 0)
                         .map_err(|_| ())
                 )
             }
@@ -119,21 +119,30 @@ impl TwsClient {
      */
     fn run_session<'a>(
         sessions: Rc<RefCell<Vec<Option<ClientSessionHandle>>>>,
-        logger: util::Logger, option: TwsClientOption, id: usize
+        logger: util::Logger, option: TwsClientOption, id: usize,
+        mut retry_count: u32
     ) -> BoxFuture<'a, ()> {
         let s = ClientSession::new(id, logger.clone(), option.clone());
         sessions.borrow_mut()[id] = Some(s.get_handle());
         s.run()
-            .then(move |_| {
-                do_log!(logger, WARNING, "Session {} closed. Retrying...", id);
+            .then(move |r| {
+                if r.is_err() && retry_count < u32::max_value() - 1 {
+                    retry_count += 1;
+                } else {
+                    retry_count = 1;
+                }
+
+                // Exponential backoff
+                let retry_time = option.retry_timeout * rand::thread_rng().gen_range(0, u64::pow(2, retry_count) - 1);
+                do_log!(logger, WARNING, "Session {} closed. Retrying after {} ms...", id, retry_time);
 
                 // Get rid of the handle first.
                 sessions.borrow_mut()[id] = None;
 
                 // Restart this session (wait for some timeout)
-                // TODO: Exponential backoff
-                tokio_timer::sleep(Duration::from_millis(option.retry_timeout))
-                    .then(move |_| Self::run_session(sessions, logger, option, id))
+                // +1 to avoid waiting for 0 seconds
+                tokio_timer::sleep(Duration::from_millis(retry_time + 1))
+                    .then(move |_| Self::run_session(sessions, logger, option, id, retry_count))
             })
             ._box()
     }

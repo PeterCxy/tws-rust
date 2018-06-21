@@ -73,7 +73,7 @@ subcommands:
             long: retry_timeout
             value_name: TIMEOUT
             takes_value: true
-            default_value: "5000"
+            default_value: "1000"
             help: Time in milliseconds in which interrupted sessions will retry
         - connections:
             short: c
