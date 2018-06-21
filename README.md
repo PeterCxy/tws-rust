@@ -197,27 +197,27 @@ iperf Done.
 ```
 $ iperf3 -c 127.0.0.1 -p 5203
 Connecting to host 127.0.0.1, port 5203
-[  5] local 127.0.0.1 port 58772 connected to 127.0.0.1 port 5203
+[  5] local 127.0.0.1 port 51076 connected to 127.0.0.1 port 5203
 [ ID] Interval           Transfer     Bitrate         Retr  Cwnd
-[  5]   0.00-1.00   sec   471 MBytes  3.95 Gbits/sec    0    703 KBytes
-[  5]   1.00-2.00   sec   426 MBytes  3.57 Gbits/sec    0    703 KBytes
-[  5]   2.00-3.00   sec   414 MBytes  3.48 Gbits/sec    0    703 KBytes
-[  5]   3.00-4.00   sec   454 MBytes  3.81 Gbits/sec    0    703 KBytes
-[  5]   4.00-5.00   sec   450 MBytes  3.77 Gbits/sec    0    703 KBytes
-[  5]   5.00-6.00   sec   451 MBytes  3.78 Gbits/sec    0    703 KBytes
-[  5]   6.00-7.00   sec   464 MBytes  3.90 Gbits/sec    0    703 KBytes
-[  5]   7.00-8.00   sec   467 MBytes  3.92 Gbits/sec    0    703 KBytes
-[  5]   8.00-9.00   sec   456 MBytes  3.82 Gbits/sec    0    703 KBytes
-[  5]   9.00-10.00  sec   440 MBytes  3.69 Gbits/sec    0    703 KBytes
+[  5]   0.00-1.00   sec   830 MBytes  6.96 Gbits/sec    0    639 KBytes
+[  5]   1.00-2.00   sec   835 MBytes  7.00 Gbits/sec    0   1023 KBytes
+[  5]   2.00-3.00   sec   851 MBytes  7.14 Gbits/sec    0   1023 KBytes
+[  5]   3.00-4.00   sec   822 MBytes  6.90 Gbits/sec    0   1.06 MBytes
+[  5]   4.00-5.00   sec   814 MBytes  6.83 Gbits/sec    0   1.06 MBytes
+[  5]   5.00-6.00   sec   826 MBytes  6.93 Gbits/sec    0   1.06 MBytes
+[  5]   6.00-7.00   sec   836 MBytes  7.01 Gbits/sec    0   1.25 MBytes
+[  5]   7.00-8.00   sec   834 MBytes  6.99 Gbits/sec    0   1.25 MBytes
+[  5]   8.00-9.00   sec   830 MBytes  6.96 Gbits/sec    0   1.25 MBytes
+[  5]   9.00-10.00  sec   818 MBytes  6.86 Gbits/sec    0   1.25 MBytes
 - - - - - - - - - - - - - - - - - - - - - - - - -
 [ ID] Interval           Transfer     Bitrate         Retr
-[  5]   0.00-10.00  sec  4.39 GBytes  3.77 Gbits/sec    0             sender
-[  5]   0.00-10.06  sec  4.38 GBytes  3.74 Gbits/sec                  receiver
+[  5]   0.00-10.00  sec  8.10 GBytes  6.96 Gbits/sec    0             sender
+[  5]   0.00-10.05  sec  8.09 GBytes  6.92 Gbits/sec                  receiver
 
 iperf Done.
 ```
 
-The `client -> server` direction suffers from a performance penalty due to the asymmetric design of the Websocket protocol: The client **must** mask data with a randomly generated key before sending to the server, and the server in turn has to decrypt it, while the server is not required to mask the data it sends to the client. Moreover, the Websocket library that we use at `tws-rust` seem to have some performance issue on these masking operation. However, this is still much faster than [chisel](https://github.com/jpillora/chisel), which is also a multiplexed TCP over Websocket implementation. Their README stated a performance of ~100MB/s which is ~800Mbps. Note that the main logic of `tws-rust` only runs on a **single** thread, in contrast to `goroutine` which can be scheduled on multiple OS threads. The performance of `tws-rust` could be improved on multi-core systems by introducing multi-threading, but I decided that it was just unnecessary since I don't have an uplink of over 1Gbps anyway :)
+This is much faster than [chisel](https://github.com/jpillora/chisel), which is also a multiplexed TCP over Websocket implementation. Their README stated a performance of ~100MB/s which is ~800Mbps. Note that the main logic of `tws-rust` only runs on a **single** thread, in contrast to `goroutine` which can be scheduled on multiple OS threads. The performance of `tws-rust` could be improved on multi-core systems by introducing multi-threading, but I decided that it was just unnecessary since I don't have an uplink of over 1Gbps anyway :)
 
 Since the `chisel` implementation used SSH by default to encrypt the packets, I have also done a test on the loopback interface of my Vultr instance with HTTPS enabled by Nginx:
 
@@ -244,5 +244,4 @@ Reverse mode, remote host 127.0.0.1 is sending
 iperf Done.
 ```
 
-Still faster than `chisel`: and in this test, `tws-rust` was only able to eat up 45% of the CPU because my Vultr instance was single core.
-
+Still faster than `chisel`: and in this test, `tws-rust` was only able to eat up 45% of the CPU because my Vultr instance was single core and it has to share with the server side and the Nginx.
