@@ -74,7 +74,7 @@ subcommands:
             value_name: TIMEOUT
             takes_value: true
             default_value: "1000"
-            help: Time in milliseconds in which interrupted sessions will retry
+            help: Time in milliseconds in which interrupted sessions will retry (with exponential backoff)
         - connections:
             short: c
             long: connections

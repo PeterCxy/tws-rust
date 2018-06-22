@@ -81,7 +81,8 @@ OPTIONS:
     -l, --listen <ADDR>              Address to listen on (e.g. 127.0.0.1:8080)
     -p, --passwd <SECRET>            Shared password with the server
     -r, --remote <ADDR>              Address of the target host to forward connections to (e.g. 4.5.6.7:3000)
-    -e, --retry_timeout <TIMEOUT>    Time in milliseconds in which interrupted sessions will retry [default: 5000]
+    -e, --retry_timeout <TIMEOUT>    Time in milliseconds in which interrupted sessions will retry (with exponential
+                                     backoff) [default: 1000]
     -s, --server <URL>               URL of TWS server (e.g. wss://example.com/my_tws_server)
     -t, --timeout <TIMEOUT>          Time in milliseconds before considering the server as disconnected [default: 5000]
 ```
