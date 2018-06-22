@@ -90,6 +90,7 @@ impl TwsServer {
             }))
             .filter_map(|t| t)
             .for_each(move |(upgrade, addr)| {
+                let addr = upgrade.stream.peer_addr().unwrap_or(addr);
                 // Spawn a separate task for every incoming connection
                 // on the event loop.
                 let work = upgrade.accept()
@@ -289,9 +290,9 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
             }
         );
         let conn_work = conn_work
-            .map(clone!(writer, logger, conn_id_owned; |conn| {
+            .map(clone!(state, writer, logger, conn_id_owned; |conn| {
                 // Notify the client that this connection is now up.
-                do_log!(logger, INFO, "[{}] Connection estabilished.", conn_id_owned);
+                do_log!(logger, INFO, "[{}] {} <=> {}, connection estabilished.", conn_id_owned, state.borrow().client.unwrap(), state.borrow().remote.unwrap());
                 writer.feed(OwnedMessage::Text(proto::connect_state_build(&conn_id_owned, proto::ConnectionState::Ok)));
 
                 // Store the connection inside the table.
