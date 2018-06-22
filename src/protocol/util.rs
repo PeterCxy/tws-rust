@@ -478,11 +478,11 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
      * Please consume the Future by joining with the
      * reading part of the sink.
      */
-    pub fn run(&self, sink: S) -> Box<Future<Item=(), Error=S::SinkError>> {
+    pub fn run(&self, sink: S) -> impl Future<Item=(), Error=S::SinkError> {
         let state = self.state.clone();
         let stream = SharedStream::new(state);
-        Box::new(stream.forward(sink)
-            .map(|_| ()))
+        stream.forward(sink)
+            .map(|_| ())
     }
 
     /*
