@@ -90,7 +90,16 @@ impl TwsServer {
             }))
             .filter_map(|t| t)
             .for_each(move |(upgrade, addr)| {
-                let addr = upgrade.stream.peer_addr().unwrap_or(addr);
+                let mut addr = upgrade.stream.peer_addr().unwrap_or(addr);
+                if addr.ip().is_loopback() {
+                    // Trust the "X-Real-IP" header from loopback interface
+                    let real_ip_res = upgrade.request.headers.get("x-real-ip").ok_or(())
+                        .and_then(|x| x.to_str().map_err(|_| ()))
+                        .and_then(|x| x.parse().map_err(|_| ()));
+                    if let Ok(real_ip) = real_ip_res {
+                        addr.set_ip(real_ip);
+                    }
+                }
                 // Spawn a separate task for every incoming connection
                 // on the event loop.
                 let work = upgrade.accept()
