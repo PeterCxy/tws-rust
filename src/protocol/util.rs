@@ -131,7 +131,7 @@ pub fn rand_str(len: usize) -> String {
 // Glue code to make error-chain work with futures
 // Source: <https://github.com/alexcrichton/sccache/blob/master/src/errors.rs>
 // Modified to avoid static lifetimes and heap allocation
-pub type BoxFuture<'a, T> = Box<'a + Future<Item = T, Error = Error>>;
+pub type BoxFuture<'a, T> = Box<dyn 'a + Future<Item = T, Error = Error>>;
 
 pub trait FutureChainErr<'a, F: Future, T>
     where F: Future + 'a,
@@ -376,7 +376,7 @@ struct SharedStreamState<I, E> {
     marker: PhantomData<E>, // Placeholder
     queue: Vec<I>, // Items to be written
     finished: bool, // Whether this stream should finish on next poll()
-    throttling_handler: Option<Box<ThrottlingHandler>>,
+    throttling_handler: Option<Box<dyn ThrottlingHandler>>,
     task: Option<Task> // The Task driving the stream
 }
 

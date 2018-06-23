@@ -168,7 +168,7 @@ impl TwsClient {
 }
 
 // Type shorthands
-type ServerConn = Framed<Box<WsStream + Send>, MessageCodec<OwnedMessage>>;
+type ServerConn = Framed<Box<dyn WsStream + Send>, MessageCodec<OwnedMessage>>;
 type ServerSink = SplitSink<ServerConn>;
 
 struct ClientSessionState {
