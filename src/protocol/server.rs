@@ -76,12 +76,13 @@ impl TwsServer {
         Server::bind(self.option.listen, &Handle::current())
             .into_future()
             .chain_err(|| "Failed to bind to server")
-            .map(move |server| {
+            .map(clone!(logger, option; |server| {
+                do_log!(logger, INFO, "Server up and listening on {}", util::addr_to_str(option.listen));
                 // The WebSocket server is now listening.
                 // Retrieve the incoming connections as a stream
                 server.incoming()
                     .map_err(|_| "Invalid Websocket connection".into())
-            })
+            }))
             .flatten_stream() // Convert the future to the stream of connections it contains.
             .map(|t| Some(t))
             .or_else(clone!(logger; |e| {
