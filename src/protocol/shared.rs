@@ -6,7 +6,8 @@ use errors::*;
 use futures::{Future, Stream};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter, StreamThrottler, ThrottlingHandler};
+use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter,
+    SharedSpeedometer, Speedometer, StreamThrottler, ThrottlingHandler};
 use websocket::OwnedMessage;
 use websocket::async::Client;
 use websocket::stream::async::Stream as WsStream;
@@ -41,31 +42,64 @@ pub trait TwsServiceState<C: TwsConnection>: 'static + Sized {
  */
 pub struct TwsTcpReadThrottler<C: TwsConnection, T: TwsServiceState<C>> {
     _marker: PhantomData<C>,
-    state: Rc<RefCell<T>>
+    state: Rc<RefCell<T>>,
+    pause_state: HashMap<String, bool>
 }
 
 impl<C, T> ThrottlingHandler for TwsTcpReadThrottler<C, T>
     where C: TwsConnection,
           T: TwsServiceState<C>
 {
-    fn pause(&mut self) {
+    fn pause(&mut self, max_speed: u64) {
         let mut state = self.state.borrow_mut();
         state.set_paused(true);
-        for (_, v) in state.get_connections() {
-            v.pause();
+
+        // The stream is now at its full speed.
+        // Try to pause the fastest substreams first
+        let mut it = state.get_connections().iter_mut()
+            .map(|(c, v)| {
+                let speed = v.get_speedometer().borrow().speed();
+                (c, v, speed)
+            })
+            .collect::<Vec<_>>();
+        it.sort_by(|(_, _, s1), (_, _, s2)| s1.cmp(s2));
+        let mut sum = 0;
+        for (_, _, s) in &it {
+            sum += *s;
+        }
+        for (c, v, s) in it {
+            if *self.pause_state.get(c).unwrap_or(&false) {
+                v.pause();
+                self.pause_state.insert(c.clone(), true);
+                sum -= s;
+
+                if sum < max_speed {
+                    break;
+                }
+            }
         }
     }
 
     fn resume(&mut self) {
         let mut state = self.state.borrow_mut();
         state.set_paused(false);
-        for (_, v) in state.get_connections() {
-            v.resume();
+
+        // Resume only the paused streams
+        for (c, s) in &self.pause_state {
+            if *s {
+                state.get_connections().get_mut(c).map_or((), |s| s.resume());
+            }
         }
+        self.pause_state.clear();
     }
 
     fn is_paused(&self) -> bool {
         self.state.borrow().get_paused()
+    }
+
+    #[inline(always)]
+    fn allow_pause_multiple_times(&self) -> bool {
+        true
     }
 }
 
@@ -96,7 +130,8 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
 
         self.get_writer().set_throttling_handler(TwsTcpReadThrottler {
             _marker: PhantomData,
-            state: self.get_state().clone()
+            state: self.get_state().clone(),
+            pause_state: HashMap::new()
         });
 
         // Obtain a future representing the writing tasks.
@@ -229,7 +264,7 @@ pub struct TwsTcpWriteThrottlingHandler<S: 'static + WsStream> {
 }
 
 impl<S: 'static + WsStream> ThrottlingHandler for TwsTcpWriteThrottlingHandler<S> {
-    fn pause(&mut self) {
+    fn pause(&mut self, _max_speed: u64) {
         self.paused = true;
         self.ws_writer.feed(OwnedMessage::Text(proto::connect_state_build(&self.conn_id, proto::ConnectionState::Pause)));
     }
@@ -273,9 +308,10 @@ pub trait TwsConnection: 'static + Sized {
         conn_id: String, logger: util::Logger,
         client: TcpStream, ws_writer: SharedWriter<SplitSink<Client<S>>>,
         conn_handler: H
-    ) -> (SharedWriter<TcpSink>, StreamThrottler) {
+    ) -> (SharedSpeedometer, SharedWriter<TcpSink>, StreamThrottler) {
         let (a, b) = Self::get_endpoint_descriptors();
         let conn_handler = Rc::new(conn_handler);
+        let speedometer = Rc::new(RefCell::new(Speedometer::new()));
 
         let read_throttler = StreamThrottler::new();
         let (sink, stream) = BytesCodec::new().framed(client).split();
@@ -288,7 +324,10 @@ pub trait TwsConnection: 'static + Sized {
         });
 
         // Forward remote packets to client
-        let stream_work = read_throttler.wrap_stream(util::AlternatingStream::new(stream)).for_each(clone!(conn_handler; |p| {
+        let stream_work = read_throttler.wrap_stream(util::AlternatingStream::new(stream)).for_each(clone!(conn_handler, speedometer; |p| {
+            // Calculate the speed of the TCP stream (read part)
+            speedometer.borrow_mut().feed_counter(p.len() as u64);
+            // Forward
             conn_handler.on_data(p);
             Ok(())
         })).map_err(clone!(a, b, logger, conn_id; |e| {
@@ -317,12 +356,13 @@ pub trait TwsConnection: 'static + Sized {
                 Ok(())
             })));
 
-        (remote_writer, read_throttler)
+        (speedometer, remote_writer, read_throttler)
     }
 
     fn get_writer(&self) -> &SharedWriter<TcpSink>;
     fn get_conn_id(&self) -> &str;
     fn get_logger(&self) -> &util::Logger;
+    fn get_speedometer(&self) -> &SharedSpeedometer;
     fn get_read_throttler(&mut self) -> &mut StreamThrottler;
     fn get_read_pause_counter(&self) -> usize;
     fn set_read_pause_counter(&mut self, counter: usize);
@@ -337,7 +377,7 @@ pub trait TwsConnection: 'static + Sized {
     fn pause(&mut self) {
         let counter = self.get_read_pause_counter();
         if counter == 0 {
-            self.get_read_throttler().pause();
+            self.get_read_throttler().pause(0);
         }
         self.set_read_pause_counter(counter + 1);
     }

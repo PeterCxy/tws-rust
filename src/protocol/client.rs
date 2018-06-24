@@ -10,7 +10,8 @@ use futures;
 use futures::future::{Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
 use protocol::protocol as proto;
-use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent, SharedWriter, StreamThrottler};
+use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent,
+    SharedWriter, SharedSpeedometer, StreamThrottler};
 use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink};
 use rand::{self, Rng};
 use std::cell::RefCell;
@@ -488,6 +489,7 @@ struct ClientConnection {
     logger: util::Logger,
     client_writer: SharedWriter<TcpSink>,
     read_throttler: StreamThrottler,
+    speedometer: SharedSpeedometer,
     read_pause_counter: usize
 }
 
@@ -500,7 +502,7 @@ impl ClientConnection {
         conn_id: String, logger: util::Logger, client: TcpStream,
         ws_writer: SharedWriter<ServerSink>, conn_handler: ClientConnectionHandler
     ) -> ClientConnection {
-        let (writer, read_throttler) =
+        let (speedometer, writer, read_throttler) =
             Self::create(conn_id.clone(), logger.clone(), client, ws_writer, conn_handler);
 
         ClientConnection {
@@ -508,6 +510,7 @@ impl ClientConnection {
             logger,
             client_writer: writer,
             read_throttler,
+            speedometer,
             read_pause_counter: 0
         }
     }
@@ -542,6 +545,11 @@ impl TwsConnection for ClientConnection {
     #[inline(always)]
     fn get_read_pause_counter(&self) -> usize {
         self.read_pause_counter
+    }
+
+    #[inline(always)]
+    fn get_speedometer(&self) -> &SharedSpeedometer {
+        &self.speedometer
     }
 
     #[inline(always)]

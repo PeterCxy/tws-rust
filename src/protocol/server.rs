@@ -11,7 +11,8 @@ use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
 use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink};
-use protocol::util::{self, FutureChainErr, HeartbeatAgent, SharedWriter, StreamThrottler};
+use protocol::util::{self, FutureChainErr, HeartbeatAgent, SharedWriter,
+    SharedSpeedometer, StreamThrottler};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -379,6 +380,7 @@ struct RemoteConnection {
     logger: util::Logger,
     remote_writer: SharedWriter<TcpSink>, // Writer of remote connection
     read_throttler: StreamThrottler,
+    speedometer: SharedSpeedometer,
     read_pause_counter: usize
 }
 
@@ -395,7 +397,7 @@ impl RemoteConnection {
         TcpStream::connect(addr)
             .chain_err(|| "Connection failed")
             .map(move |s| {
-                let (remote_writer, read_throttler) =
+                let (speedometer, remote_writer, read_throttler) =
                     Self::create(conn_id_owned.clone(), logger.clone(), s, ws_writer, conn_handler);
 
                 // Create RemoteConnection object
@@ -405,6 +407,7 @@ impl RemoteConnection {
                     logger,
                     remote_writer,
                     read_throttler,
+                    speedometer,
                     read_pause_counter: 0
                 }
             })
@@ -435,6 +438,11 @@ impl TwsConnection for RemoteConnection {
     #[inline(always)]
     fn get_read_pause_counter(&self) -> usize {
         self.read_pause_counter
+    }
+
+    #[inline(always)]
+    fn get_speedometer(&self) -> &SharedSpeedometer {
+        &self.speedometer
     }
 
     #[inline(always)]

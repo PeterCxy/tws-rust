@@ -1,4 +1,5 @@
 use errors::*;
+use bytes::{Bytes, BytesMut};
 use futures::{Async, Stream, Sink, Poll};
 use futures::future::Future;
 use futures::task::{self, Task};
@@ -203,14 +204,55 @@ impl<'a, F> Boxable for F
  */
 
 /*
+ * A meter of speed
+ * used for throttling logical connections
+ */
+pub struct Speedometer {
+    begin_instant: Instant,
+    counter: u64
+}
+
+impl Speedometer {
+    pub fn new() -> Speedometer {
+        Speedometer {
+            begin_instant: Instant::now(),
+            counter: 0
+        }
+    }
+
+    pub fn feed_counter(&mut self, count: u64) {
+        let cur_instant = Instant::now();
+        if cur_instant.duration_since(self.begin_instant) >= Duration::from_secs(5) {
+            self.begin_instant = cur_instant;
+            self.counter = 0;
+        }
+        self.counter += count;
+    }
+
+    pub fn speed(&self) -> u64 {
+        let duration = Instant::now().duration_since(self.begin_instant).as_secs();
+        if duration != 0 {
+            self.counter / duration
+        } else {
+            0
+        }
+    }
+}
+
+pub type SharedSpeedometer = Rc<RefCell<Speedometer>>;
+
+/*
  * Generic handler for throttling a stream
  */
 pub trait ThrottlingHandler {
     /*
      * Pause the stream
      * do not poll until it is resumed
+     * max_speed: the maximum speed of the stream
+     *   used for partial pausing of the underlying connections
+     *   when the WebSocket link is full
      */
-    fn pause(&mut self);
+    fn pause(&mut self, max_speed: u64);
 
     /*
      * Resume the stream
@@ -221,6 +263,17 @@ pub trait ThrottlingHandler {
      * Has the stream been paused?
      */
     fn is_paused(&self) -> bool;
+
+    /*
+     * Override this to true if this handler
+     * can accept `pause` events even after pausing
+     * This is desirable if the `pause` handler does not
+     * try to pause all streams but only pause parts of them
+     * to see if it will work
+     */
+    fn allow_pause_multiple_times(&self) -> bool {
+        false
+    }
 }
 
 /*
@@ -262,7 +315,7 @@ impl StreamThrottler {
 }
 
 impl ThrottlingHandler for StreamThrottler {
-    fn pause(&mut self) {
+    fn pause(&mut self, _max_speed: u64) {
         self.state.borrow_mut().paused = true;
     }
 
@@ -370,6 +423,36 @@ impl<S: Stream> Stream for AlternatingStream<S> {
 const QUEUE_MAX_LENGTH: usize = 4;
 
 /*
+ * Trait for all supported types of SharedStream
+ * all must have a size
+ */
+pub trait SizedBuf {
+    fn get_size(&self) -> u64;
+}
+
+impl SizedBuf for Bytes {
+    fn get_size(&self) -> u64 {
+        self.len() as u64
+    }
+}
+
+impl SizedBuf for BytesMut {
+    fn get_size(&self) -> u64 {
+        self.len() as u64
+    }
+}
+
+impl SizedBuf for OwnedMessage {
+    fn get_size(&self) -> u64 {
+        match *self {
+            OwnedMessage::Text(ref s) => s.len() as u64,
+            OwnedMessage::Binary(ref vec) => vec.len() as u64,
+            _ => 0
+        }
+    }
+}
+
+/*
  * Shared state between SharedWriter and SharedStream
  */
 struct SharedStreamState<I, E> {
@@ -377,6 +460,7 @@ struct SharedStreamState<I, E> {
     queue: Vec<I>, // Items to be written
     finished: bool, // Whether this stream should finish on next poll()
     throttling_handler: Option<Box<dyn ThrottlingHandler>>,
+    speedometer: Speedometer,
     task: Option<Task> // The Task driving the stream
 }
 
@@ -391,11 +475,11 @@ struct SharedStreamState<I, E> {
  * This stream is not thread-safe. Only to be used
  * in single-threaded asynchronous code.
  */
-struct SharedStream<I: Debug, E> {
+struct SharedStream<I: Debug + SizedBuf, E> {
     state: Rc<RefCell<SharedStreamState<I, E>>>
 }
 
-impl<I: Debug, E> SharedStream<I, E> {
+impl<I: Debug + SizedBuf, E> SharedStream<I, E> {
     fn new(state: Rc<RefCell<SharedStreamState<I, E>>>) -> SharedStream<I, E> {
         SharedStream {
             state
@@ -403,7 +487,7 @@ impl<I: Debug, E> SharedStream<I, E> {
     }
 }
 
-impl<I: Debug, E> Stream for SharedStream<I, E> {
+impl<I: Debug + SizedBuf, E> Stream for SharedStream<I, E> {
     type Item = I;
     type Error = E;
 
@@ -423,6 +507,9 @@ impl<I: Debug, E> Stream for SharedStream<I, E> {
             // There is item to be sent.
             // Send the first element in the queue (buffer)
             let item = state.queue.remove(0);
+
+            // Calculate the speed of this stream (write part)
+            state.speedometer.feed_counter(item.get_size());
 
             if state.queue.len() < QUEUE_MAX_LENGTH && state.throttling_handler.is_some() {
                 let h = state.throttling_handler.as_mut().unwrap();
@@ -452,11 +539,11 @@ impl<I: Debug, E> Stream for SharedStream<I, E> {
  * The writer is cheaply clonable, allowing to
  * be shared between multiple owners.
  */
-pub struct SharedWriter<S: 'static + Sink> where S::SinkItem: Debug {
+pub struct SharedWriter<S: 'static + Sink> where S::SinkItem: Debug + SizedBuf {
     state: Rc<RefCell<SharedStreamState<S::SinkItem, S::SinkError>>>
 }
 
-impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
+impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug + SizedBuf {
     pub fn new() -> SharedWriter<S> {
         SharedWriter {
             state: Rc::new(RefCell::new(SharedStreamState {
@@ -464,7 +551,8 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
                 queue: Vec::with_capacity(QUEUE_MAX_LENGTH * 2),
                 finished: false,
                 task: None,
-                throttling_handler: None
+                throttling_handler: None,
+                speedometer: Speedometer::new()
             }))
         }
     }
@@ -496,9 +584,10 @@ impl<S: 'static + Sink> SharedWriter<S> where S::SinkItem: Debug {
             //println!("new len = {}", state.queue.len());
 
             if state.queue.len() >= QUEUE_MAX_LENGTH && state.throttling_handler.is_some() {
+                let speed = state.speedometer.speed();
                 let h = state.throttling_handler.as_mut().unwrap();
-                if !h.is_paused() {
-                    h.pause();
+                if !h.is_paused() || h.allow_pause_multiple_times() {
+                    h.pause(speed);
                 }
             }
         }
@@ -539,7 +628,7 @@ fn notify_task(task: &Option<Task>) {
  * This should be customized because SharedWriter
  * itself is clonable.
  */
-impl<S: 'static + Sink> Drop for SharedWriter<S> where S::SinkItem: Debug {
+impl<S: 'static + Sink> Drop for SharedWriter<S> where S::SinkItem: Debug + SizedBuf {
     fn drop(&mut self) {
         // The state is shared between at least
         // one SharedStream and one SharedWriter
@@ -557,7 +646,7 @@ impl<S: 'static + Sink> Drop for SharedWriter<S> where S::SinkItem: Debug {
  * SharedWriter is clonable by just cloning the state
  * allowing multiple ownership without two levels of `Rc`s
  */
-impl<S: 'static + Sink> Clone for SharedWriter<S> where S::SinkItem: Debug {
+impl<S: 'static + Sink> Clone for SharedWriter<S> where S::SinkItem: Debug + SizedBuf {
     fn clone(&self) -> SharedWriter<S> {
         SharedWriter {
             state: self.state.clone()
