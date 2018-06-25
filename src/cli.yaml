@@ -1,5 +1,5 @@
 name: tws-rust
-version: "0.1.0"
+version: "0.1.1"
 author: Peter Cai <peter@typeblog.net>
 about: TCP-over-Websocket implementation with multiplexing support
 args:

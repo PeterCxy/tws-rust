@@ -91,6 +91,14 @@ Note that due to an early design issue, it is actually the **client** of `tws-ru
 
 You can also use `--config` to pass a configuration file instead of passing everything through command line. You can find the examples in the `example/` folder.
 
+**Please always use a randomly generated password (or more properly, secret key) for TWS connections.**
+
+You could generate one by
+
+```
+openssl rand -base64 32
+```
+
 **Please note: if you use the self-contained version of tws-rust binary, you have to set the following environment variable correctly:**
 
 Due to the configuration of the statically linked OpenSSL, you must set `SSL_CERT_DIR` to your system's certificate store, on ArchLinux it is `/etc/ssl/certs`.
