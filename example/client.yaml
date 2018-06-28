@@ -1,6 +1,9 @@
 listen: 127.0.0.1:5203
 server: ws://127.0.0.1:5202
-remote: 127.0.0.1:5201
+remote: 8.8.8.8:53
 passwd: my_super_safe_password
+connections: 2
 timeout: 5000
 retry_timeout: 1000
+udp_timeout: 60000
+no_udp: false

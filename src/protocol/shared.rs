@@ -6,6 +6,7 @@ use errors::*;
 use futures::{Future, Stream};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
+use protocol::udp::{SharedUdpHandle, UdpStream};
 use protocol::util::{self, Boxable, BoxFuture, HeartbeatAgent, SharedWriter,
     SharedSpeedometer, Speedometer, StreamThrottler, ThrottlingHandler};
 use websocket::OwnedMessage;
@@ -16,12 +17,15 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::time::{Instant, Duration};
 use tokio_codec::{BytesCodec, Decoder, Framed};
 use tokio::net::TcpStream;
 use tokio::executor::current_thread;
+use tokio_timer;
 
-pub trait TwsServiceState<C: TwsConnection>: 'static + Sized {
+pub trait TwsServiceState<C: TwsConnection, U: TwsUdpConnection>: 'static + Sized {
     fn get_connections(&mut self) -> &mut HashMap<String, C>;
+    fn get_udp_connections(&mut self) -> &mut HashMap<String, U>;
 
     /*
      * The `paused` state of a TwsService session
@@ -40,19 +44,28 @@ pub trait TwsServiceState<C: TwsConnection>: 'static + Sized {
  * If the stream is congested, mark the corresponding
  * TCP connections as paused.
  */
-pub struct TwsTcpReadThrottler<C: TwsConnection, T: TwsServiceState<C>> {
+pub struct TwsTcpReadThrottler<C: TwsConnection, U: TwsUdpConnection, T: TwsServiceState<C, U>> {
     _marker: PhantomData<C>,
+    _marker_2: PhantomData<U>,
     state: Rc<RefCell<T>>,
     pause_state: HashMap<String, bool>
 }
 
-impl<C, T> ThrottlingHandler for TwsTcpReadThrottler<C, T>
+impl<C, U, T> ThrottlingHandler for TwsTcpReadThrottler<C, U, T>
     where C: TwsConnection,
-          T: TwsServiceState<C>
+          U: TwsUdpConnection,
+          T: TwsServiceState<C, U>
 {
     fn pause(&mut self, max_speed: u64) {
         let mut state = self.state.borrow_mut();
         state.set_paused(true);
+
+        // Pause all UDP connections before pausing TCP ones
+        // Don't need anything special for UDP ones,
+        // pausing just causes all packet to be lost
+        for (_, v) in state.get_udp_connections() {
+            v.get_handle().borrow_mut().pause();
+        }
 
         // The stream is now at its full speed.
         // Try to pause the fastest substreams first
@@ -84,6 +97,11 @@ impl<C, T> ThrottlingHandler for TwsTcpReadThrottler<C, T>
         let mut state = self.state.borrow_mut();
         state.set_paused(false);
 
+        // Resume all UDP connections before TCP ones
+        for (_, v) in state.get_udp_connections() {
+            v.get_handle().borrow_mut().resume();
+        }
+
         // Resume only the paused streams
         for (c, s) in &self.pause_state {
             if *s {
@@ -107,7 +125,7 @@ impl<C, T> ThrottlingHandler for TwsTcpReadThrottler<C, T>
  * Shared logic abstracted from both the server and the client
  * should be implemented only on structs
  */
-pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStream>: 'static + Sized {
+pub trait TwsService<C: TwsConnection, U: TwsUdpConnection, T: TwsServiceState<C, U>, S: 'static + WsStream>: 'static + Sized {
     /*
      * Required fields simulated by required methods.
      */
@@ -116,6 +134,7 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
     fn get_heartbeat_agent(&self) -> &HeartbeatAgent<SplitSink<Client<S>>>;
     fn get_logger(&self) -> &util::Logger;
     fn get_state(&self) -> &Rc<RefCell<T>>;
+    fn get_udp_timeout(&self) -> u64;
 
     /*
      * Execute this service.
@@ -126,10 +145,12 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
      */
     fn run_service<'a>(self, client: Client<S>) -> BoxFuture<'a, ()> {
         let logger = self.get_logger().clone();
+        let state = self.get_state().clone();
         let (sink, stream) = client.split();
 
         self.get_writer().set_throttling_handler(TwsTcpReadThrottler {
             _marker: PhantomData,
+            _marker_2: PhantomData,
             state: self.get_state().clone(),
             pause_state: HashMap::new()
         });
@@ -143,6 +164,15 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
         let heartbeat_work = self.get_heartbeat_agent().run().map_err(clone!(logger; |_| {
             do_log!(logger, ERROR, "Session timed out.");
         }));
+
+        // UDP cleanup work
+        let udp_cleanup_work = tokio_timer::Interval::new(Instant::now(), Duration::from_millis(self.get_udp_timeout()))
+            .for_each(clone!(state; |_| {
+                for (_, conn) in state.borrow_mut().get_udp_connections() {
+                    conn.get_handle().borrow().notify();
+                }
+                Ok(())
+            }));
 
         // The main task
         // 3 combined streams. Will finish once one of them finish.
@@ -166,6 +196,7 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
             })
             .select2(sink_write) // Execute task for the writer
             .select2(heartbeat_work) // Execute task for heartbeats
+            .select2(udp_cleanup_work) // Execute task for cleaning up UDP connections
             .then(clone!(logger; |_| {
                 do_log!(logger, INFO, "Session finished.");
 
@@ -207,8 +238,10 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
             // Implementations can override these to control event handling.
             proto::Packet::Handshake(addr) => self.on_handshake(addr),
             proto::Packet::Connect(conn_id) => self.on_connect(conn_id),
+            proto::Packet::UdpConnect(conn_id) => self.on_udp_connect(conn_id),
             proto::Packet::ConnectionState((conn_id, state)) => self.on_connect_state(conn_id, state),
             proto::Packet::Data((conn_id, data)) => self.on_data(conn_id, data),
+            proto::Packet::UdpData((conn_id, data)) => self.on_udp_data(conn_id, data),
 
             // Process unknown packets
             _ => self.on_unknown()
@@ -238,11 +271,13 @@ pub trait TwsService<C: TwsConnection, T: TwsServiceState<C>, S: 'static + WsStr
     fn on_unknown(&self) {}
     fn on_handshake(&self, _addr: SocketAddr) {}
     fn on_connect(&self, _conn_id: &str) {}
+    fn on_udp_connect(&self, _conn_id: &str) {}
     fn on_connect_state(&self, _conn_id: &str, _state: proto::ConnectionState) {
         // If this method is overridden, implementations must call self._on_connect_state()
         self._on_connect_state(_conn_id, &_state);
     }
     fn on_data(&self, _conn_id: &str, _data: &[u8]) {}
+    fn on_udp_data(&self, _conn_id: &str, _data: &[u8]) {}
 }
 
 // Splitted Sink for Tcp byte streams
@@ -395,5 +430,39 @@ pub trait TwsConnection: 'static + Sized {
         if counter > 0 {
             self.set_read_pause_counter(counter - 1);
         }
+    }
+}
+
+pub trait TwsUdpConnectionHandler: 'static + Sized {
+    fn on_data(&self, _d: Vec<u8>);
+    fn on_close(&self);
+}
+
+pub trait TwsUdpConnection: 'static + Sized {
+    fn create<H: TwsUdpConnectionHandler>(
+        conn_id: String, logger: util::Logger,
+        client: UdpStream, handler: H
+    ) {
+        let handler = Rc::new(handler);
+        let stream_work = util::AlternatingStream::new(client).for_each(clone!(handler; |data| {
+            handler.on_data(data);
+            Ok(())
+        }));
+        
+        current_thread::spawn(stream_work.then(clone!(conn_id, logger, handler; |_| {
+            do_log!(logger, INFO, "[{}] UDP connection idle. Closing.", conn_id);
+            handler.on_close();
+            Ok(())
+        })))
+    }
+
+    fn get_handle(&self) -> &SharedUdpHandle;
+
+    fn pause(&self) {
+        self.get_handle().borrow_mut().pause();
+    }
+
+    fn resume(&self) {
+        self.get_handle().borrow_mut().resume();
     }
 }

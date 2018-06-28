@@ -10,13 +10,16 @@ use futures::Stream;
 use futures::future::{Future, IntoFuture};
 use futures::stream::SplitSink;
 use protocol::protocol as proto;
-use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink};
+use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler,
+    TcpSink, TwsUdpConnection, TwsUdpConnectionHandler};
+use protocol::udp::{UdpDatagram, SharedUdpHandle};
 use protocol::util::{self, FutureChainErr, HeartbeatAgent, SharedWriter,
     SharedSpeedometer, StreamThrottler};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::time::Duration;
 use tokio::executor::current_thread;
 use tokio::net::TcpStream;
 use tokio::reactor::Handle;
@@ -29,7 +32,11 @@ pub struct TwsServerOption {
     pub listen: SocketAddr,
     pub passwd: String,
     #[serde(default = "util::default_timeout")]
-    pub timeout: u64
+    pub timeout: u64,
+    #[serde(default = "util::default_no_udp")]
+    pub no_udp: bool,
+    #[serde(default = "util::default_udp_timeout")]
+    pub udp_timeout: u64
 }
 
 /*
@@ -132,13 +139,19 @@ struct ServerSessionState {
     client: Option<SocketAddr>, // The client address (will be available when spawned)
     handshaked: bool, // Have we finished the handshake?
     paused: bool,
-    remote_connections: HashMap<String, RemoteConnection> // Map from connection ids to remote connection objects.
+    remote_connections: HashMap<String, RemoteConnection>, // Map from connection ids to remote connection objects.
+    remote_udp_connections: HashMap<String, RemoteUdpConnection>
 }
 
-impl TwsServiceState<RemoteConnection> for ServerSessionState {
+impl TwsServiceState<RemoteConnection, RemoteUdpConnection> for ServerSessionState {
     #[inline(always)]
     fn get_connections(&mut self) -> &mut HashMap<String, RemoteConnection> {
         &mut self.remote_connections
+    }
+
+    #[inline(always)]
+    fn get_udp_connections(&mut self) -> &mut HashMap<String, RemoteUdpConnection> {
+        &mut self.remote_udp_connections
     }
 
     #[inline(always)]
@@ -180,7 +193,8 @@ impl ServerSession {
                 client: None,
                 handshaked: false,
                 paused: false,
-                remote_connections: HashMap::new()
+                remote_connections: HashMap::new(),
+                remote_udp_connections: HashMap::new()
             }))
         }
     }
@@ -234,7 +248,7 @@ impl ServerSession {
     }
 }
 
-impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSession {
+impl TwsService<RemoteConnection, RemoteUdpConnection, ServerSessionState, TcpStream> for ServerSession {
     #[inline(always)]
     fn get_passwd(&self) -> &str {
         &self.option.passwd
@@ -258,6 +272,11 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
     #[inline(always)]
     fn get_state(&self) -> &Rc<RefCell<ServerSessionState>> {
         &self.state
+    }
+
+    #[inline(always)]
+    fn get_udp_timeout(&self) -> u64 {
+        self.option.udp_timeout
     }
 
     fn on_unknown(&self) {
@@ -325,6 +344,28 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
         current_thread::spawn(conn_work);
     }
 
+    fn on_udp_connect(&self, conn_id: &str) {
+        if !self.check_handshaked() { return; }
+        if self.option.no_udp { return; }
+
+        clone!(self, state, writer, logger);
+        let conn_id_owned = String::from(conn_id);
+        let handler = RemoteUdpConnectionHandler {
+            conn_id: conn_id_owned.clone(),
+            ws_writer: writer.clone(),
+            state: state.clone()
+        };
+        let conn = RemoteUdpConnection::connect(
+            conn_id, logger.clone(), &self.state.borrow().remote.unwrap(),
+            Duration::from_millis(self.option.udp_timeout), handler);
+        if let Ok(conn) = conn {
+            do_log!(logger, INFO, "[{}] {} <=> {}, UDP socket established.", conn_id_owned, state.borrow().client.unwrap(), state.borrow().remote.unwrap());
+            state.borrow_mut().remote_udp_connections.insert(conn_id_owned, conn);
+        } else if let Err(e) = conn {
+            do_log!(logger, ERROR, "[{}] Failed to bind UDP socket: {:?}", conn_id_owned, e);
+        }
+    }
+
     fn on_connect_state(&self, conn_id: &str, conn_state: proto::ConnectionState) {
         if !self.check_handshaked() { return; }
         self._on_connect_state(conn_id, &conn_state);
@@ -343,6 +384,17 @@ impl TwsService<RemoteConnection, ServerSessionState, TcpStream> for ServerSessi
             .map(|conn| conn.get_writer().clone());
         match writer {
             Some(writer) => writer.feed(Bytes::from(data)),
+            None => ()
+        }
+    }
+
+    fn on_udp_data(&self, conn_id: &str, data: &[u8]) {
+        if !self.check_handshaked() { return; }
+
+        let handle = self.state.borrow().remote_udp_connections.get(conn_id)
+            .map(|conn| conn.get_handle().clone());
+        match handle {
+            Some(handle) => handle.borrow_mut().send(data),
             None => ()
         }
     }
@@ -455,5 +507,57 @@ impl Drop for RemoteConnection {
     fn drop(&mut self) {
         // Once a connection is dropped, close it immediately.
         self.close();
+    }
+}
+
+struct RemoteUdpConnectionHandler {
+    conn_id: String,
+    ws_writer: SharedWriter<ClientSink>,
+    state: Rc<RefCell<ServerSessionState>>
+}
+
+impl TwsUdpConnectionHandler for RemoteUdpConnectionHandler {
+    fn on_data(&self, d: Vec<u8>) {
+        self.ws_writer.feed(OwnedMessage::Binary(proto::udp_data_build(&self.conn_id, &d)));
+    }
+
+    fn on_close(&self) {
+        self.state.borrow_mut().remote_udp_connections.remove(&self.conn_id);
+    }
+}
+
+#[allow(dead_code)]
+struct RemoteUdpConnection {
+    conn_id: String,
+    handle: SharedUdpHandle,
+    logger: util::Logger
+}
+
+impl RemoteUdpConnection {
+    fn connect(
+        conn_id: &str, logger: util::Logger, addr: &SocketAddr,
+        timeout: Duration, handler: RemoteUdpConnectionHandler
+    ) -> Result<RemoteUdpConnection> {
+        let conn_id_owned = String::from(conn_id);
+        let (conn, stream) = UdpDatagram::connect(&addr, timeout).chain_err(|| "Failed to connect to UDP remote")?;
+        Self::create(conn_id_owned.clone(), logger.clone(), stream, handler);
+        let handle = conn.get_handle();
+
+        // We also have to poll the UdpDatagram for updates
+        // Just leave it as a separate job, it will close once the stream closes
+        current_thread::spawn(conn.into_future().then(|_| Ok(())));
+
+        Ok(RemoteUdpConnection {
+            conn_id: conn_id_owned,
+            handle,
+            logger
+        })
+    }
+}
+
+impl TwsUdpConnection for RemoteUdpConnection {
+    #[inline(always)]
+    fn get_handle(&self) -> &SharedUdpHandle {
+        &self.handle
     }
 }

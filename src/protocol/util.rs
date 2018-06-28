@@ -22,6 +22,8 @@ use websocket::OwnedMessage;
 pub fn default_timeout() -> u64 { 5000 }
 pub fn default_retry_timeout() -> u64 { 1000 }
 pub fn default_connections() -> usize { 2 }
+pub fn default_no_udp() -> bool { false }
+pub fn default_udp_timeout() -> u64 { 60000 }
 
 /*
  * Abstract loggers

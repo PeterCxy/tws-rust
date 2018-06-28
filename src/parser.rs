@@ -38,7 +38,12 @@ impl<'a> TryFrom<&'a ArgMatches<'a>> for TwsClientOption {
             retry_timeout: args.value_of("retry_timeout")
                 .ok_or("WTF")?
                 .parse()
-                .map_err(|_| "Invalid value of `retry_timeout`. Must be a number")?
+                .map_err(|_| "Invalid value of `retry_timeout`. Must be a number")?,
+            udp_timeout: args.value_of("udp_timeout")
+                .ok_or("WTF")?
+                .parse()
+                .map_err(|_| "Invalid value of `udp_timeout`. Must be a number")?,
+            no_udp: args.is_present("no_udp"),
         })
     }
 }
@@ -61,6 +66,11 @@ impl<'a> TryFrom<&'a ArgMatches<'a>> for TwsServerOption {
                 .ok_or("WTF")?
                 .parse()
                 .map_err(|_| "Invalid value of `timeout`. Must be a number")?,
+            udp_timeout: args.value_of("udp_timeout")
+                .ok_or("WTF")?
+                .parse()
+                .map_err(|_| "Invalid value of `udp_timeout`. Must be a number")?,
+            no_udp: args.is_present("no_udp"),
         })
     }
 }

@@ -1,3 +1,5 @@
 listen: 127.0.0.1:5202
 passwd: my_super_safe_password
 timeout: 5000
+udp_timeout: 60000
+no_udp: false

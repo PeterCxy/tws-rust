@@ -35,6 +35,15 @@ subcommands:
             value_name: SECRET
             takes_value: true
             help: Shared password with the client
+        - no_udp:
+            long: no_udp
+            help: Disable UDP support
+        - udp_timeout:
+            long: udp_timeout
+            value_name: TIMEOUT
+            takes_value: true
+            default_value: "60000"
+            help: Time in milliseconds before closing idle UDP sockets
   - client:
       about: Run in client mode
       args:
@@ -88,3 +97,12 @@ subcommands:
             value_name: SECRET
             takes_value: true
             help: Shared password with the server
+        - no_udp:
+            long: no_udp
+            help: Disable UDP support
+        - udp_timeout:
+            long: udp_timeout
+            value_name: TIMEOUT
+            takes_value: true
+            default_value: "60000"
+            help: Time in milliseconds before closing idle UDP sockets

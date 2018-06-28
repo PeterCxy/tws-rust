@@ -7,12 +7,14 @@
 use errors::*;
 use bytes::{Bytes, BytesMut};
 use futures;
-use futures::future::{Future, IntoFuture};
+use futures::future::{Either, Future, IntoFuture};
 use futures::stream::{Stream, SplitSink};
 use protocol::protocol as proto;
+use protocol::udp::{UdpDatagram, UdpStream, SharedUdpHandle};
 use protocol::util::{self, BoxFuture, Boxable, FutureChainErr, HeartbeatAgent,
     SharedWriter, SharedSpeedometer, StreamThrottler};
-use protocol::shared::{TwsServiceState, TwsService, TwsConnection, TwsConnectionHandler, TcpSink};
+use protocol::shared::{TwsServiceState, TwsService, TwsConnection,
+    TwsConnectionHandler, TcpSink, TwsUdpConnection, TwsUdpConnectionHandler};
 use rand::{self, Rng};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -39,7 +41,11 @@ pub struct TwsClientOption {
     #[serde(default = "util::default_timeout")]
     pub timeout: u64,
     #[serde(default = "util::default_retry_timeout")]
-    pub retry_timeout: u64
+    pub retry_timeout: u64,
+    #[serde(default = "util::default_no_udp")]
+    pub no_udp: bool,
+    #[serde(default = "util::default_udp_timeout")]
+    pub udp_timeout: u64
 }
 
 /*
@@ -65,7 +71,15 @@ impl TwsClient {
         self.logger = Rc::new(logger);
     }
 
-    pub fn run<'a>(&self) -> impl Future<Error=Error, Item=()> {
+    pub fn run<'a>(&self) -> impl Future<Error = Error, Item=()> {
+        if self.option.no_udp {
+            Either::A(self.run_tcp().then(|_| Ok(())))
+        } else {
+            Either::B(self.run_tcp().select(self.run_udp()).then(|_| Ok(())))
+        }
+    }
+
+    pub fn run_tcp<'a>(&self) -> impl Future<Error=Error, Item=()> {
         clone!(self, sessions, logger);
         let task_maintain_sessions = self.maintain_sessions();
         TcpListener::bind(&self.option.listen)
@@ -87,6 +101,30 @@ impl TwsClient {
                     }
                 } else {
                     do_log!(logger, WARNING, "Failed to assign an active session to the new connection");
+                }
+                Ok(())
+            })
+    }
+
+    pub fn run_udp<'a>(&self) -> impl Future<Error=Error, Item=()> {
+        clone!(self, sessions, logger);
+        UdpDatagram::bind(&self.option.listen, Duration::from_millis(self.option.udp_timeout))
+            .into_future()
+            .chain_err(|| "Failed to bind to local UDP port")
+            .map(move |server| {
+                let handle = server.get_handle();
+                server
+                    .map_err(|_| "err".into())
+                    .map(move |a| (handle.clone(), a))
+            })
+            .flatten_stream()
+            .for_each(move |(handle, (addr, client))| {
+                let session_id = Self::choose_session(&sessions);
+                if let Some(id) = session_id {
+                    if let Some(ref conn) = sessions.borrow()[id] {
+                        let conn_id = conn.add_udp_connection(addr, handle, client);
+                        do_log!(logger, INFO, "[{}] new UDP connection assigned to session {}", conn_id, id);
+                    }
                 }
                 Ok(())
             })
@@ -176,13 +214,19 @@ struct ClientSessionState {
     connected: bool,
     connections: HashMap<String, ClientConnection>,
     pending_connections: HashMap<String, PendingClientConnection>,
+    udp_connections: HashMap<String, ClientUdpConnection>,
     paused: bool
 }
 
-impl TwsServiceState<ClientConnection> for ClientSessionState {
+impl TwsServiceState<ClientConnection, ClientUdpConnection> for ClientSessionState {
     #[inline(always)]
     fn get_connections(&mut self) -> &mut HashMap<String, ClientConnection> {
         &mut self.connections
+    }
+
+    #[inline(always)]
+    fn get_udp_connections(&mut self) -> &mut HashMap<String, ClientUdpConnection> {
+        &mut self.udp_connections
     }
 
     #[inline(always)]
@@ -239,6 +283,19 @@ impl ClientSessionHandle {
         self.writer.feed(OwnedMessage::Text(proto::connect_build(&self.option.passwd, &conn_id).unwrap()));
         conn_id
     }
+
+    fn add_udp_connection(&self, addr: SocketAddr, handle: SharedUdpHandle, client: UdpStream) -> String {
+        let conn_id = util::rand_str(6);
+        let handler = ClientUdpConnectionHandler {
+            conn_id: conn_id.clone(),
+            ws_writer: self.writer.clone(),
+            state: self.state.clone()
+        };
+        self.state.borrow_mut().udp_connections.insert(conn_id.clone(),
+            ClientUdpConnection::new(conn_id.clone(), self.logger.clone(), client, addr, handle, handler));
+        self.writer.feed(OwnedMessage::Text(proto::udp_connect_build(&self.option.passwd, &conn_id).unwrap()));
+        return conn_id;
+    }
 }
 
 /*
@@ -270,6 +327,7 @@ impl ClientSession {
                 connected: false,
                 connections: HashMap::new(),
                 pending_connections: HashMap::new(),
+                udp_connections: HashMap::new(),
                 paused: false
             }))
         }
@@ -369,7 +427,7 @@ impl ClientSession {
     }
 }
 
-impl TwsService<ClientConnection, ClientSessionState, Box<WsStream + Send>> for ClientSession {
+impl TwsService<ClientConnection, ClientUdpConnection, ClientSessionState, Box<WsStream + Send>> for ClientSession {
     #[inline(always)]
     fn get_passwd(&self) -> &str {
         &self.option.passwd
@@ -393,6 +451,11 @@ impl TwsService<ClientConnection, ClientSessionState, Box<WsStream + Send>> for 
     #[inline(always)]
     fn get_state(&self) -> &Rc<RefCell<ClientSessionState>> {
         &self.state
+    }
+
+    #[inline(always)]
+    fn get_udp_timeout(&self) -> u64 {
+        self.option.udp_timeout
     }
 
     fn on_unknown(&self) {
@@ -425,6 +488,15 @@ impl TwsService<ClientConnection, ClientSessionState, Box<WsStream + Send>> for 
             .map(|conn| conn.get_writer().clone());
         match writer {
             Some(writer) => writer.feed(Bytes::from(data)),
+            None => ()
+        }
+    }
+
+    fn on_udp_data(&self, conn_id: &str, data: &[u8]) {
+        let handle = self.state.borrow().udp_connections.get(conn_id)
+            .map(|conn| (conn.addr.clone(), conn.get_handle().clone()));
+        match handle {
+            Some((addr, handle)) => handle.borrow_mut().send_to(&addr, data),
             None => ()
         }
     }
@@ -564,5 +636,51 @@ impl Drop for ClientConnection {
          * Close immediately on drop.
          */
         self.close();
+    }
+}
+
+struct ClientUdpConnectionHandler {
+    conn_id: String,
+    ws_writer: SharedWriter<ServerSink>,
+    state: Rc<RefCell<ClientSessionState>>
+}
+
+impl TwsUdpConnectionHandler for ClientUdpConnectionHandler {
+    fn on_data(&self, d: Vec<u8>) {
+        self.ws_writer.feed(OwnedMessage::Binary(proto::udp_data_build(&self.conn_id, &d)));
+    }
+
+    fn on_close(&self) {
+        self.state.borrow_mut().udp_connections.remove(&self.conn_id);
+    }
+}
+
+#[allow(dead_code)]
+struct ClientUdpConnection {
+    conn_id: String,
+    handle: SharedUdpHandle,
+    addr: SocketAddr,
+    logger: util::Logger
+}
+
+impl ClientUdpConnection {
+    fn new(
+        conn_id: String, logger: util::Logger, client: UdpStream, addr: SocketAddr,
+        handle: SharedUdpHandle, handler: ClientUdpConnectionHandler
+    ) -> ClientUdpConnection {
+        Self::create(conn_id.clone(), logger.clone(), client, handler);
+        ClientUdpConnection {
+            conn_id,
+            handle,
+            logger,
+            addr
+        }
+    }
+}
+
+impl TwsUdpConnection for ClientUdpConnection {
+    #[inline(always)]
+    fn get_handle(&self) -> &SharedUdpHandle {
+        &self.handle
     }
 }
