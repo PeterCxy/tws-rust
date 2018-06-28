@@ -372,7 +372,7 @@ impl ClientSession {
                         // Periodically remove all pending connections.
                         tokio_timer::Interval::new(Instant::now(), Duration::from_millis(option.timeout))
                             .for_each(clone!(state; |_| {
-                                do_log!(logger, DEBUG, "Periodic cleanup of dead pending connections");
+                                //do_log!(logger, DEBUG, "Periodic cleanup of dead pending connections");
                                 let to_remove: Vec<_> = state.borrow_mut().pending_connections.iter()
                                     .filter(|&(_, conn)| conn.created.elapsed() > Duration::from_millis(option.timeout))
                                     .map(|(id, _)| id.clone())
