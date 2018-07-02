@@ -380,14 +380,6 @@ impl TwsConnectionHandler for RemoteConnectionHandler {
  * This emits events for remote packets.
  * Should be subscribed to by the ServerSession.
  */
-/*struct RemoteConnection {
-    conn_id: String,
-    logger: util::Logger,
-    remote_writer: SharedWriter<TcpSink>, // Writer of remote connection
-    read_throttler: StreamThrottler,
-    speedometer: SharedSpeedometer,
-    read_pause_counter: usize
-}*/
 make_tws_connection!(
     RemoteConnection; remote_writer;
     ("remote", "client")
