@@ -27,7 +27,7 @@ use tokio::executor::current_thread;
 use tokio_codec::Framed;
 use tokio_timer;
 use websocket::{ClientBuilder, OwnedMessage};
-use websocket::async::MessageCodec;
+use websocket::async::{Client, MessageCodec};
 use websocket::stream::async::Stream as WsStream;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -210,35 +210,15 @@ impl TwsClient {
 type ServerConn = Framed<Box<dyn WsStream + Send>, MessageCodec<OwnedMessage>>;
 type ServerSink = SplitSink<ServerConn>;
 
-struct ClientSessionState {
-    connected: bool,
-    connections: HashMap<String, ClientConnection>,
-    pending_connections: HashMap<String, PendingClientConnection>,
-    udp_connections: HashMap<String, ClientUdpConnection>,
-    paused: bool
-}
-
-impl TwsServiceState<ClientConnection, ClientUdpConnection> for ClientSessionState {
-    #[inline(always)]
-    fn get_connections(&mut self) -> &mut HashMap<String, ClientConnection> {
-        &mut self.connections
+make_tws_service_state!(
+    ClientSessionState;
+    ClientConnection, ClientUdpConnection;
+    connections, udp_connections;
+    {
+        connected: bool,
+        pending_connections: HashMap<String, PendingClientConnection>
     }
-
-    #[inline(always)]
-    fn get_udp_connections(&mut self) -> &mut HashMap<String, ClientUdpConnection> {
-        &mut self.udp_connections
-    }
-
-    #[inline(always)]
-    fn get_paused(&self) -> bool {
-        self.paused
-    }
-
-    #[inline(always)]
-    fn set_paused(&mut self, paused: bool) {
-        self.paused = paused;
-    }
-}
+);
 
 /*
  * Handle that can be used to communicate
@@ -305,14 +285,61 @@ impl ClientSessionHandle {
  * Once established, it can forward traffic from
  * multiple TCP clients, through server to remote.
  */
-struct ClientSession {
-    id: usize,
-    option: TwsClientOption,
-    logger: util::Logger,
-    writer: SharedWriter<ServerSink>,
-    heartbeat_agent: HeartbeatAgent<ServerSink>,
-    state: Rc<RefCell<ClientSessionState>>
-}
+make_tws_service!(
+    ClientSession;
+    ClientConnection, ClientUdpConnection, ClientSessionState, Box<WsStream + Send>;
+    { id: usize, option: TwsClientOption };
+    override fn get_passwd(&self) -> &str {
+        &self.option.passwd
+    }
+
+    override fn get_udp_timeout(&self) -> u64 {
+        self.option.udp_timeout
+    }
+
+    override fn on_unknown(&self) -> () {
+        // TODO: Use a dedicated packet type rather than `unknown`
+        // to signal successful handshake.
+        let mut state = self.state.borrow_mut();
+        if !state.connected {
+            do_log!(self.logger, INFO, "[{}] Session up.", self.id);
+            state.connected = true;
+        }
+    }
+
+    override fn on_connect_state(&self, conn_id: &str, conn_state: proto::ConnectionState) -> () {
+        self._on_connect_state(conn_id, &conn_state);
+        if conn_state.is_closed() {
+            Self::close_conn(&self.state, &self.writer, conn_id);
+        } else if conn_state.is_ok() {
+            if self.state.borrow().pending_connections.contains_key(conn_id) {
+                // If there is a corresponding pending connection, activate it.
+                self.activate_connection(conn_id);
+            } else {
+                // Else we instruct the server to close the unknown connection
+                self.writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, proto::ConnectionState::Closed)));
+            }
+        }
+    }
+
+    override fn on_data(&self, conn_id: &str, data: &[u8]) -> () {
+        let writer = self.state.borrow().connections.get(conn_id)
+            .map(|conn| conn.get_writer().clone());
+        match writer {
+            Some(writer) => writer.feed(Bytes::from(data)),
+            None => ()
+        }
+    }
+
+    override fn on_udp_data(&self, conn_id: &str, data: &[u8]) -> () {
+        let handle = self.state.borrow().udp_connections.get(conn_id)
+            .map(|conn| (conn.addr.clone(), conn.get_handle().clone()));
+        match handle {
+            Some((addr, handle)) => handle.borrow_mut().send_to(&addr, data),
+            None => ()
+        }
+    }
+);
 
 impl ClientSession {
     fn new(id: usize, logger: util::Logger, option: TwsClientOption) -> ClientSession {
@@ -427,81 +454,6 @@ impl ClientSession {
     }
 }
 
-impl TwsService<ClientConnection, ClientUdpConnection, ClientSessionState, Box<WsStream + Send>> for ClientSession {
-    #[inline(always)]
-    fn get_passwd(&self) -> &str {
-        &self.option.passwd
-    }
-
-    #[inline(always)]
-    fn get_logger(&self) -> &util::Logger {
-        &self.logger
-    }
-
-    #[inline(always)]
-    fn get_writer(&self) -> &SharedWriter<ServerSink> {
-        &self.writer
-    }
-
-    #[inline(always)]
-    fn get_heartbeat_agent(&self) -> &HeartbeatAgent<ServerSink> {
-        &self.heartbeat_agent
-    }
-
-    #[inline(always)]
-    fn get_state(&self) -> &Rc<RefCell<ClientSessionState>> {
-        &self.state
-    }
-
-    #[inline(always)]
-    fn get_udp_timeout(&self) -> u64 {
-        self.option.udp_timeout
-    }
-
-    fn on_unknown(&self) {
-        // TODO: Use a dedicated packet type rather than `unknown`
-        // to signal successful handshake.
-        let mut state = self.state.borrow_mut();
-        if !state.connected {
-            do_log!(self.logger, INFO, "[{}] Session up.", self.id);
-            state.connected = true;
-        }
-    }
-
-    fn on_connect_state(&self, conn_id: &str, conn_state: proto::ConnectionState) {
-        self._on_connect_state(conn_id, &conn_state);
-        if conn_state.is_closed() {
-            Self::close_conn(&self.state, &self.writer, conn_id);
-        } else if conn_state.is_ok() {
-            if self.state.borrow().pending_connections.contains_key(conn_id) {
-                // If there is a corresponding pending connection, activate it.
-                self.activate_connection(conn_id);
-            } else {
-                // Else we instruct the server to close the unknown connection
-                self.writer.feed(OwnedMessage::Text(proto::connect_state_build(conn_id, proto::ConnectionState::Closed)));
-            }
-        }
-    }
-
-    fn on_data(&self, conn_id: &str, data: &[u8]) {
-        let writer = self.state.borrow().connections.get(conn_id)
-            .map(|conn| conn.get_writer().clone());
-        match writer {
-            Some(writer) => writer.feed(Bytes::from(data)),
-            None => ()
-        }
-    }
-
-    fn on_udp_data(&self, conn_id: &str, data: &[u8]) {
-        let handle = self.state.borrow().udp_connections.get(conn_id)
-            .map(|conn| (conn.addr.clone(), conn.get_handle().clone()));
-        match handle {
-            Some((addr, handle)) => handle.borrow_mut().send_to(&addr, data),
-            None => ()
-        }
-    }
-}
-
 /*
  * Forward TCP stream from client to remote
  */
@@ -556,14 +508,10 @@ impl PendingClientConnection {
 /*
  * Model of a TCP connection from client to local.
  */
-struct ClientConnection {
-    conn_id: String,
-    logger: util::Logger,
-    client_writer: SharedWriter<TcpSink>,
-    read_throttler: StreamThrottler,
-    speedometer: SharedSpeedometer,
-    read_pause_counter: usize
-}
+make_tws_connection!(
+    ClientConnection; client_writer;
+    ("client", "server")
+);
 
 impl ClientConnection {
     /*
@@ -588,57 +536,6 @@ impl ClientConnection {
     }
 }
 
-impl TwsConnection for ClientConnection {
-    #[inline(always)]
-    fn get_endpoint_descriptors() -> (&'static str, &'static str) {
-        ("client", "server")
-    }
-
-    #[inline(always)]
-    fn get_logger(&self) -> &util::Logger {
-        &self.logger
-    }
-
-    #[inline(always)]
-    fn get_conn_id(&self) -> &str {
-        &self.conn_id
-    }
-
-    #[inline(always)]
-    fn get_writer(&self) -> &SharedWriter<TcpSink> {
-        &self.client_writer
-    }
-
-    #[inline(always)]
-    fn get_read_throttler(&mut self) -> &mut StreamThrottler {
-        &mut self.read_throttler
-    }
-
-    #[inline(always)]
-    fn get_read_pause_counter(&self) -> usize {
-        self.read_pause_counter
-    }
-
-    #[inline(always)]
-    fn get_speedometer(&self) -> &SharedSpeedometer {
-        &self.speedometer
-    }
-
-    #[inline(always)]
-    fn set_read_pause_counter(&mut self, counter: usize) {
-        self.read_pause_counter = counter;
-    }
-}
-
-impl Drop for ClientConnection {
-    fn drop(&mut self) {
-        /*
-         * Close immediately on drop.
-         */
-        self.close();
-    }
-}
-
 struct ClientUdpConnectionHandler {
     conn_id: String,
     ws_writer: SharedWriter<ServerSink>,
@@ -655,13 +552,12 @@ impl TwsUdpConnectionHandler for ClientUdpConnectionHandler {
     }
 }
 
-#[allow(dead_code)]
-struct ClientUdpConnection {
-    conn_id: String,
-    handle: SharedUdpHandle,
-    addr: SocketAddr,
-    logger: util::Logger
-}
+make_tws_udp_connection!(
+    ClientUdpConnection;
+    {
+        addr: SocketAddr
+    }
+);
 
 impl ClientUdpConnection {
     fn new(
@@ -675,12 +571,5 @@ impl ClientUdpConnection {
             logger,
             addr
         }
-    }
-}
-
-impl TwsUdpConnection for ClientUdpConnection {
-    #[inline(always)]
-    fn get_handle(&self) -> &SharedUdpHandle {
-        &self.handle
     }
 }

@@ -8,6 +8,7 @@
 pub mod util;
 pub mod protocol;
 mod udp;
+#[macro_use]
 mod shared;
 pub mod server;
 pub mod client;

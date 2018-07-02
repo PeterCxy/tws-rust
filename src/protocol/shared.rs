@@ -36,6 +36,44 @@ pub trait TwsServiceState<C: TwsConnection, U: TwsUdpConnection>: 'static + Size
     fn get_paused(&self) -> bool;
 }
 
+macro_rules! make_tws_service_state {
+    (
+        $name:ident;
+        $conn_type:ty, $udp_conn_type:ty;
+        $conn_field_name:ident, $udp_conn_field_name:ident;
+        { $($field:ident: $type:ty),*}
+    ) => (
+        struct $name {
+            paused: bool,
+            $conn_field_name: HashMap<String, $conn_type>,
+            $udp_conn_field_name: HashMap<String, $udp_conn_type>,
+            $( $field: $type ),*
+        }
+
+        impl TwsServiceState<$conn_type, $udp_conn_type> for $name {
+            #[inline(always)]
+            fn get_connections(&mut self) -> &mut HashMap<String, $conn_type> {
+                &mut self.$conn_field_name
+            }
+
+            #[inline(always)]
+            fn get_udp_connections(&mut self) -> &mut HashMap<String, $udp_conn_type> {
+                &mut self.$udp_conn_field_name
+            }
+
+            #[inline(always)]
+            fn get_paused(&self) -> bool {
+                self.paused
+            }
+
+            #[inline(always)]
+            fn set_paused(&mut self, paused: bool) {
+                self.paused = paused;
+            }
+        }
+    )
+}
+
 /*
  * Throttle the TCP connection between
  *  1. server and remote
@@ -280,6 +318,49 @@ pub trait TwsService<C: TwsConnection, U: TwsUdpConnection, T: TwsServiceState<C
     fn on_udp_data(&self, _conn_id: &str, _data: &[u8]) {}
 }
 
+macro_rules! make_tws_service {
+    (
+        $name:ident;
+        $conn_type:ty, $udp_conn_type:ty, $state_type:ty, $stream_type:ty;
+        { $($field:ident: $type:ty),*};
+        $(override fn $fn_name:ident (&$s:ident $(, $param:ident: $ptype:ty)*) -> $ret_type:ty $block:block)*
+    ) => {
+        struct $name {
+            logger: util::Logger,
+            writer: SharedWriter<SplitSink<Client<$stream_type>>>,
+            heartbeat_agent: HeartbeatAgent<SplitSink<Client<$stream_type>>>,
+            state: Rc<RefCell<$state_type>>,
+            $( $field: $type ),*
+        }
+
+        impl TwsService<$conn_type, $udp_conn_type, $state_type, $stream_type> for $name {
+            #[inline(always)]
+            fn get_writer(&self) -> &SharedWriter<SplitSink<Client<$stream_type>>> {
+                &self.writer
+            }
+
+            #[inline(always)]
+            fn get_heartbeat_agent(&self) -> &HeartbeatAgent<SplitSink<Client<$stream_type>>> {
+                &self.heartbeat_agent
+            }
+
+            #[inline(always)]
+            fn get_logger(&self) -> &util::Logger {
+                &self.logger
+            }
+
+            #[inline(always)]
+            fn get_state(&self) -> &Rc<RefCell<$state_type>> {
+                &self.state
+            }
+
+            $(
+                fn $fn_name(&$s, $($param: $ptype),*) -> $ret_type { $block }
+            )*
+        }
+    };
+}
+
 // Splitted Sink for Tcp byte streams
 pub type TcpSink = SplitSink<Framed<TcpStream, BytesCodec>>;
 
@@ -433,6 +514,73 @@ pub trait TwsConnection: 'static + Sized {
     }
 }
 
+macro_rules! make_tws_connection {
+    (
+        $name:ident; $writer_name:ident;
+        ($endpoint_1:expr, $endpoint_2:expr)
+    ) => (
+        struct $name {
+            conn_id: String,
+            logger: util::Logger,
+            $writer_name: SharedWriter<TcpSink>,
+            read_throttler: StreamThrottler,
+            speedometer: SharedSpeedometer,
+            read_pause_counter: usize
+        }
+
+        impl TwsConnection for $name {
+            #[inline(always)]
+            fn get_endpoint_descriptors() -> (&'static str, &'static str) {
+                ($endpoint_1, $endpoint_2)
+            }
+
+            #[inline(always)]
+            fn get_logger(&self) -> &util::Logger {
+                &self.logger
+            }
+
+            #[inline(always)]
+            fn get_conn_id(&self) -> &str {
+                &self.conn_id
+            }
+
+            #[inline(always)]
+            fn get_writer(&self) -> &SharedWriter<TcpSink> {
+                &self.$writer_name
+            }
+
+            #[inline(always)]
+            fn get_read_throttler(&mut self) -> &mut StreamThrottler {
+                &mut self.read_throttler
+            }
+
+            #[inline(always)]
+            fn get_read_pause_counter(&self) -> usize {
+                self.read_pause_counter
+            }
+
+            #[inline(always)]
+            fn get_speedometer(&self) -> &SharedSpeedometer {
+                &self.speedometer
+            }
+
+            #[inline(always)]
+            fn set_read_pause_counter(&mut self, counter: usize) {
+                self.read_pause_counter = counter;
+            }
+        }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                /*
+                 * Close immediately on drop.
+                */
+                self.close();
+            }
+        }
+    )
+}
+
 pub trait TwsUdpConnectionHandler: 'static + Sized {
     fn on_data(&self, _d: Vec<u8>);
     fn on_close(&self);
@@ -465,4 +613,26 @@ pub trait TwsUdpConnection: 'static + Sized {
     fn resume(&self) {
         self.get_handle().borrow_mut().resume();
     }
+}
+
+macro_rules! make_tws_udp_connection {
+    (
+        $name:ident;
+        { $($field:ident: $type:ty),*}
+    ) => (
+        #[allow(dead_code)]
+        struct $name {
+            conn_id: String,
+            handle: SharedUdpHandle,
+            logger: util::Logger,
+            $( $field: $type ),*
+        }
+
+        impl TwsUdpConnection for $name {
+            #[inline(always)]
+            fn get_handle(&self) -> &SharedUdpHandle {
+                &self.handle
+            }
+        }
+    )
 }
