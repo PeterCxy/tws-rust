@@ -3,6 +3,8 @@ tws-rust
 
 `tws-rust` is a fast TCP tunnel over Websocket with multiplexing support, written in blazing fast systems programming language Rust. `tws-rust` can be used to tunnel any TCP connection through a Websocket channel, which is a message protocol based on HTTP. This is mainly useful for bypassing firewalls that allow only 80 / 443 ports, though combined with `HTTPS` it can also help secure your connection. You should always use `tws-rust` behind `HTTPS` even if you are just a little concerned about security.
 
+`tws-rust` got this name because the prototype of my protocol called `tws` was first written in Node.js, after which I started to learn Rust and re-implemented it in Rust. The Node.js version was not correctly implemented and has a huge pile of bugs and problems, thus for now `tws-rust` is the only usable implementation of `tws`.
+
 **Please carefully read this document before actually using this program!**
 
 **Disclaimer: This project was built with the intention of personal use, and was released in the hope that it would help others. There is ABSOLUTELY NO WARRANTY on this project, to the extent permitted by applicable laws. You should evaluate for yourself before using this project in production.**
@@ -14,6 +16,7 @@ Features
 - Performant
 - [Multiplexing](https://en.wikipedia.org/wiki/Multiplexing): To avoid the overhead of HTTP(S) requests, `tws-rust` generates a fixed (configurable) number of Websocket connections, on which it can create logical channels to carry **any** number of TCP connections (M:N multiplexing).
 - SSL/TLS through reverse proxy: Though the server side of `tws-rust` itself does not handle SSL/TLS, it is always recommended to place a SSL-capable reverse proxy (like Nginx) in front of `tws-rust` for maximum security. The client side supports SSL handling out of the box.
+- UDP forwarding is also supported: TWS can forward UDP packets through the Websocket connection, though this might introduce a lot of overhead due to UDP-over-TCP compared to bare UDP, but it is always better to have some backup plan :)
 - Self-contained binaries: we provide statically-linked self-contained binaries for releases.
 - Written in Rust!
 
@@ -50,14 +53,17 @@ USAGE:
 
 FLAGS:
     -h, --help       Prints help information
+        --no_udp     Disable UDP support
     -V, --version    Prints version information
     -v               Verbose logging
 
 OPTIONS:
-        --config <FILE_NAME>    Load a configuration file in yaml format that overrides all the command-line options
-    -l, --listen <ADDR>         Address to listen on (e.g. 127.0.0.1:8080)
-    -p, --passwd <SECRET>       Shared password with the client
-    -t, --timeout <TIMEOUT>     Time in milliseconds before considering inactive clients as disconnected [default: 5000]
+        --config <FILE_NAME>       Load a configuration file in yaml format that overrides all the command-line options
+    -l, --listen <ADDR>            Address to listen on (e.g. 127.0.0.1:8080)
+    -p, --passwd <SECRET>          Shared password with the client
+    -t, --timeout <TIMEOUT>        Time in milliseconds before considering inactive clients as disconnected [default:
+                                   5000]
+        --udp_timeout <TIMEOUT>    Time in milliseconds before closing idle UDP sockets [default: 60000]
 ```
 
 Client:
@@ -71,6 +77,7 @@ USAGE:
 
 FLAGS:
     -h, --help       Prints help information
+        --no_udp     Disable UDP support
     -V, --version    Prints version information
     -v               Verbose logging
 
@@ -85,6 +92,7 @@ OPTIONS:
                                      backoff) [default: 1000]
     -s, --server <URL>               URL of TWS server (e.g. wss://example.com/my_tws_server)
     -t, --timeout <TIMEOUT>          Time in milliseconds before considering the server as disconnected [default: 5000]
+        --udp_timeout <TIMEOUT>      Time in milliseconds before closing idle UDP sockets [default: 60000]
 ```
 
 Note that due to an early design issue, it is actually the **client** of `tws-rust` that could decide which address to forward the connections to (the `--remote` option of `tws-rust client`), not the server side, as opposed to other TCP tunnels.
@@ -164,7 +172,7 @@ You can change the part after `@` for your custom configuration file names.
 Benchmark
 ===
 
-The following benchmarks are run on `lo` on an XPS15-9550 with Intel i7-6700HQ. The connection was not behind SSL. Since the implementation of the client-side SSL completely depends on `OpenSSL`, the performance of SSL-enabled connections are mostly limited by the performance of `OpenSSL` on your hardware, and `OpenSSL` can be benchmarked separately from this program.
+The following benchmarks are run on `lo` on an XPS15-9550 with Intel i7-6700HQ. The connection was not behind SSL and the UDP forwarding feature is disabled for pure-TCP performance (UDP datagram consumes some CPU cycles for its events even when it is just listening). Since the implementation of the client-side SSL completely depends on `OpenSSL`, the performance of SSL-enabled connections are mostly limited by the performance of `OpenSSL` on your hardware, and `OpenSSL` can be benchmarked separately from this program.
 
 Server command:
 
