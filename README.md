@@ -16,7 +16,7 @@ Features
 - Performant
 - [Multiplexing](https://en.wikipedia.org/wiki/Multiplexing): To avoid the overhead of HTTP(S) requests, `tws-rust` generates a fixed (configurable) number of Websocket connections, on which it can create logical channels to carry **any** number of TCP connections (M:N multiplexing).
 - SSL/TLS through reverse proxy: Though the server side of `tws-rust` itself does not handle SSL/TLS, it is always recommended to place a SSL-capable reverse proxy (like Nginx) in front of `tws-rust` for maximum security. The client side supports SSL handling out of the box.
-- UDP forwarding is also supported: TWS can forward UDP packets through the Websocket connection, though this might introduce a lot of overhead due to UDP-over-TCP compared to bare UDP, but it is always better to have some backup plan :)
+- UDP forwarding is also supported: TWS can also forward UDP packets to the remote host along with TCP streams through the Websocket connection, though this might introduce a lot of overhead due to UDP-over-TCP compared to bare UDP, but it is always better to have some backup plan :)
 - Self-contained binaries: we provide statically-linked self-contained binaries for releases.
 - Written in Rust!
 
